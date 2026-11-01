@@ -112,6 +112,14 @@ def get_sensors():
     return _ok(rows)
 
 
+@app.get("/api/readings/all", summary="All historical readings across nodes")
+def get_all_readings(limit: int = Query(default=100, ge=1, le=5000)):
+    """Return sensor readings across all nodes ordered by timestamp descending."""
+    db = _get_db()
+    rows = db.all_readings(limit)
+    return _ok({"count": len(rows), "readings": rows})
+
+
 @app.get("/api/sensors/{node_id}/latest", summary="Latest reading for a single node")
 @app.get("/api/readings/{node_id}", summary="Latest reading for a single node (alias)")
 def get_sensor_latest(node_id: int):
@@ -402,14 +410,6 @@ def get_ml_evaluation():
     with open(report_path, "r") as fh:
         rep = json.load(fh)
     return _ok(rep)
-
-
-@app.get("/api/readings/all", summary="All historical readings across nodes")
-def get_all_readings(limit: int = Query(default=100, ge=1, le=5000)):
-    """Return sensor readings across all nodes ordered by timestamp descending."""
-    db = _get_db()
-    rows = db.all_readings(limit)
-    return _ok({"count": len(rows), "readings": rows})
 
 
 @app.get("/api/system/recovery", summary="Recovery events log")

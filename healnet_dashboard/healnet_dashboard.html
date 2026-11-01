@@ -102,7 +102,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
   <section class="card">
     <h2>Recovery</h2>
-    <div id="reclog" class="log"><div class="empty">Recovery is not implemented yet. This panel will show recovery attempts once messages appear on healnet/system/recovery.</div></div>
+    <div id="reclog" class="log"><div class="empty">No recovery events yet. Recovery events from the coordinator's buttons appear here. Automatic software and relay recovery are not built yet.</div></div>
     <div style="margin-top:8px"><button disabled>Software recovery (not available)</button> <button disabled>Hardware recovery (not available)</button></div>
   </section>
 </main>
@@ -298,7 +298,7 @@ function renderLogs(){
     <div style="color:var(--mute)">${esc(a.detail || "")}</div></div></div>`).join("")
     : '<div class="empty">No anomalies detected.</div>';
 
-  if(recLog.length) $("reclog").innerHTML = recLog.map(r=>`<div class="row"><time>${fmtTime(r.ts)}</time><div>${esc(JSON.stringify(r))}</div></div>`).join("");
+  if(recLog.length) $("reclog").innerHTML = recLog.map(r=>`<div class="row"><time>${fmtTime(r.ts)}</time><div><span class="tag t-${r.result==="SUCCESS"?"CLEARED":"ACTIVE"}">${esc(r.result||"EVENT")}</span><b>${esc(r.method||"recovery")}</b>${r.node?" · node "+esc(r.node):""}<div style="color:var(--mute)">${esc(r.detail||r.event||"")}</div></div></div>`).join("");
 }
 
 function renderAll(){
