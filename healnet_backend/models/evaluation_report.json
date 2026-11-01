@@ -1,65 +1,65 @@
 {
-  "timestamp": "2026-11-01T11:55:09.972765+00:00",
+  "timestamp": "2026-11-01T12:42:36.742205+00:00",
   "synthetic": true,
   "training_samples": 237,
   "test_samples": 103,
   "best_model": "IsolationForest",
-  "best_f1": 1.0,
+  "best_f1": 0.6896551724137931,
   "models_evaluated": [
     {
       "model_name": "IsolationForest",
-      "precision": 1.0,
+      "precision": 0.5263157894736842,
       "recall": 1.0,
-      "f1": 1.0,
-      "accuracy": 1.0,
-      "fpr": 0.0,
+      "f1": 0.6896551724137931,
+      "accuracy": 0.912621359223301,
+      "fpr": 0.0967741935483871,
       "fnr": 0.0,
       "confusion_matrix": [
         [
-          63,
-          0
+          84,
+          9
         ],
         [
           0,
-          40
+          10
         ]
       ]
     },
     {
       "model_name": "LocalOutlierFactor",
-      "precision": 0.975609756097561,
+      "precision": 0.5,
       "recall": 1.0,
-      "f1": 0.9876543209876543,
-      "accuracy": 0.9902912621359223,
-      "fpr": 0.015873015873015872,
+      "f1": 0.6666666666666666,
+      "accuracy": 0.9029126213592233,
+      "fpr": 0.10752688172043011,
       "fnr": 0.0,
       "confusion_matrix": [
         [
-          62,
-          1
+          83,
+          10
         ],
         [
           0,
-          40
+          10
         ]
       ]
     },
     {
       "model_name": "OneClassSVM",
-      "precision": 0.7142857142857143,
+      "precision": 0.2631578947368421,
       "recall": 1.0,
-      "f1": 0.8333333333333334,
-      "accuracy": 0.8446601941747572,
-      "fpr": 0.25396825396825395,
+      "f1": 0.4166666666666667,
+      "accuracy": 0.7281553398058253,
+      "fpr": 0.3010752688172043,
       "fnr": 0.0,
       "confusion_matrix": [
         [
-          47,
-          16
+          65,
+          28
         ],
         [
           0,
-          40
+          10
         ]
       ]
     }

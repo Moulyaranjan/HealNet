@@ -191,9 +191,17 @@ class Processor:
                 result="SUCCESS", detail=f"{ev_type}: {msg}")
             self.db.insert_system_event(
                 "coordinator_recovery", f"Recovery on node {node_id}: {msg}", "INFO")
+            self.pub(config.T_RECOVERY, {
+                "ts": round(now, 3), "node": node_id, "event": ev_type,
+                "method": "manual_button", "result": "SUCCESS", "detail": msg
+            }, qos=1)
         elif "fail" in ev_type:
             self.db.insert_system_event(
                 "simulated_failure", f"Failure simulation on node {node_id}: {msg}", "WARNING")
+            self.pub(config.T_FAULT, {
+                "ts": round(now, 3), "event": "SIMULATED_FAILURE", "node": node_id,
+                "severity": "WARNING", "detail": msg, "state": "EVENT"
+            }, qos=1)
         else:
             self.db.insert_system_event("coordinator_event", f"{ev_type}: {msg}", "INFO")
 
@@ -539,7 +547,8 @@ class Processor:
         self.metrics.inc_faults(1)
         self.db.insert_system_event(
             "fault_opened", f"FAULT {code} {name} node={st.node_id or '-'}: {detail}", severity)
-        log.warning("FAULT %d %s node=%s: %s", code, name, st.node_id or "-", detail)
+        node_label = str(st.node_id) if st.node_id else "-"
+        log.warning("FAULT %d %s node=%s: %s", code, name, node_label, detail)
         self.pub(config.T_FAULT, {
             "id": fid, "ts": round(now, 3), "fault_code": code, "fault": name, "severity": severity,
             "node": st.node_id or None, "state": "ACTIVE", "detail": detail}, qos=1)
@@ -553,7 +562,8 @@ class Processor:
         name, severity = config.FAULTS[code]
         self.db.insert_system_event(
             "fault_cleared", f"FAULT {code} {name} node={st.node_id or '-'} CLEARED: {detail}", "INFO")
-        log.info("FAULT %d %s node=%s CLEARED after %.0f s", code, name, st.node_id or "-", now - info["ts"])
+        node_label = str(st.node_id) if st.node_id else "-"
+        log.info("FAULT %d %s node=%s CLEARED after %.0f s", code, name, node_label, now - info["ts"])
         self.pub(config.T_FAULT, {
             "id": info["id"], "ts": round(now, 3), "fault_code": code, "fault": name, "severity": severity,
             "node": st.node_id or None, "state": "CLEARED", "detail": detail,

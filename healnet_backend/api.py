@@ -154,6 +154,30 @@ def get_sensor_history(
 # ---------------------------------------------------------------------------
 # Node endpoints
 # ---------------------------------------------------------------------------
+def _derive_node_status(db: Storage, node_id: int, latest: Optional[dict]) -> tuple[str, Optional[float]]:
+    """Derive accurate node status (ONLINE, STALE, OFFLINE, UNKNOWN) and status_since timestamp."""
+    evt = db.latest_node_status(node_id)
+    # Check if coordinator is reported down via active FAULT 5
+    active_sys_faults = [f for f in db.active_faults() if f.get("node_id") is None and f.get("fault_code") == config.FAULT_COORDINATOR]
+    if active_sys_faults:
+        return "UNKNOWN", evt["ts"] if evt else None
+
+    if latest:
+        age = time.time() - latest["ts"]
+        if age < config.NODE_STALE_S:
+            status = "ONLINE"
+        elif age < config.NODE_TIMEOUT_S:
+            status = "STALE"
+        else:
+            status = "OFFLINE"
+        status_since = evt["ts"] if evt else latest["ts"]
+        return status, status_since
+
+    if evt:
+        return evt.get("new_status", "UNKNOWN"), evt["ts"]
+    return "UNKNOWN", None
+
+
 @app.get("/api/nodes", summary="Status overview of all nodes")
 def get_nodes():
     """Return a status snapshot for every configured sensor node."""
@@ -161,9 +185,14 @@ def get_nodes():
     out = []
     for nid in config.NODE_IDS:
         row = db.latest_reading(nid)
+        status, status_since = _derive_node_status(db, nid, row)
         faults = [f for f in db.active_faults() if f.get("node_id") == nid]
+        age_s = round(time.time() - row["ts"], 1) if row else None
         out.append({
             "node_id": nid,
+            "status": status,
+            "status_since": status_since,
+            "age_s": age_s,
             "last_reading": row,
             "active_faults": faults,
             "active_fault_count": len(faults),
@@ -182,16 +211,31 @@ def get_node_status(node_id: int):
         _err(f"Unknown node_id {node_id}. Valid: {list(config.NODE_IDS)}", 404)
     db = _get_db()
     latest = db.latest_reading(node_id)
+    status, status_since = _derive_node_status(db, node_id, latest)
     faults = [f for f in db.active_faults() if f.get("node_id") == node_id]
-    age_s = None
-    if latest:
-        age_s = round(time.time() - latest["ts"], 1)
+    age_s = round(time.time() - latest["ts"], 1) if latest else None
     return _ok({
         "node_id": node_id,
+        "status": status,
+        "status_since": status_since,
         "last_reading": latest,
         "age_s": age_s,
         "active_faults": faults,
+        "active_fault_count": len(faults),
     })
+
+
+@app.get("/api/nodes/{node_id}/faults", summary="Fault history for a specific node")
+def get_node_faults(
+    node_id: int,
+    limit: int = Query(default=50, ge=1, le=1000),
+):
+    """Return active and historical fault records for a specific node."""
+    if node_id not in config.NODE_IDS:
+        _err(f"Unknown node_id {node_id}. Valid: {list(config.NODE_IDS)}", 404)
+    db = _get_db()
+    rows = db.node_faults(node_id, limit)
+    return _ok({"node_id": node_id, "count": len(rows), "faults": rows})
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +324,7 @@ def get_system_metrics():
     if proc_snap:
         local_snap = get_metrics().snapshot()
         proc_snap["api_uptime_s"] = local_snap["uptime_s"]
-        if "os" in local_snap and ("os" not in proc_snap or not proc_snap["os"].get("cpu_pct")):
+        if "os" in local_snap and ("os" not in proc_snap or not proc_snap["os"].get("cpu_percent")):
             proc_snap["os"] = local_snap["os"]
         return _ok(proc_snap)
     snap = get_metrics().snapshot()
@@ -358,6 +402,56 @@ def get_ml_evaluation():
     with open(report_path, "r") as fh:
         rep = json.load(fh)
     return _ok(rep)
+
+
+@app.get("/api/readings/all", summary="All historical readings across nodes")
+def get_all_readings(limit: int = Query(default=100, ge=1, le=5000)):
+    """Return sensor readings across all nodes ordered by timestamp descending."""
+    db = _get_db()
+    rows = db.all_readings(limit)
+    return _ok({"count": len(rows), "readings": rows})
+
+
+@app.get("/api/system/recovery", summary="Recovery events log")
+@app.get("/api/recovery", summary="Recovery events log (alias)")
+def get_recovery_events(limit: int = Query(default=50, ge=1, le=1000)):
+    """Return recovery events log (manual button recovery, simulated recovery, etc.)."""
+    db = _get_db()
+    rows = db.recovery_events(limit)
+    return _ok({"count": len(rows), "events": rows})
+
+
+@app.get("/api/system/summary", summary="System-wide network health summary")
+def get_system_summary():
+    """Return an aggregated summary of the network status, health percentage and active faults."""
+    db = _get_db()
+    counts = {"ONLINE": 0, "STALE": 0, "OFFLINE": 0, "UNKNOWN": 0}
+    for nid in config.NODE_IDS:
+        r = db.latest_reading(nid)
+        st, _ = _derive_node_status(db, nid, r)
+        counts[st] = counts.get(st, 0) + 1
+
+    active_faults = db.active_faults()
+    coord_faults = [f for f in active_faults if f.get("node_id") is None and f.get("fault_code") == config.FAULT_COORDINATOR]
+    coordinator_status = "offline" if coord_faults else "online"
+
+    total = len(config.NODE_IDS)
+    health = 100.0 * (counts["ONLINE"] + 0.5 * counts["STALE"]) / total if total else 0.0
+    if coordinator_status == "offline":
+        health = 0.0
+    health = max(0.0, health - 5.0 * len(active_faults))
+
+    return _ok({
+        "total_nodes": total,
+        "online": counts["ONLINE"],
+        "stale": counts["STALE"],
+        "offline": counts["OFFLINE"],
+        "unknown": counts["UNKNOWN"],
+        "coordinator": coordinator_status,
+        "active_fault_count": len(active_faults),
+        "active_faults": active_faults,
+        "network_health_pct": round(health, 1),
+    })
 
 
 # ---------------------------------------------------------------------------

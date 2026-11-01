@@ -186,15 +186,52 @@ class Storage:
         )
 
     def open_fault(self, ts: float, node: Optional[int], code: int, name: str, severity: str, detail: str, sensor_type: Optional[str] = None) -> int:
-        cur = self._exec(
-            """INSERT INTO faults(ts,node_id,fault_code,fault_name,severity,detail,sensor_type,active)
-               VALUES(?,?,?,?,?,?,?,1)""",
-            (ts, node, code, name, severity, detail, sensor_type),
-        )
-        return cur.lastrowid
+        with self._lock:
+            # Check for existing active fault for this node and fault code to prevent duplicates
+            if node is not None:
+                existing = self._db.execute(
+                    "SELECT id FROM faults WHERE active=1 AND node_id=? AND fault_code=?",
+                    (node, code)
+                ).fetchone()
+            else:
+                existing = self._db.execute(
+                    "SELECT id FROM faults WHERE active=1 AND node_id IS NULL AND fault_code=?",
+                    (code,)
+                ).fetchone()
+            if existing:
+                self._db.execute(
+                    "UPDATE faults SET detail=?, severity=?, ts=? WHERE id=?",
+                    (detail, severity, ts, existing[0])
+                )
+                self._db.commit()
+                return existing[0]
+
+            cur = self._db.execute(
+                """INSERT INTO faults(ts,node_id,fault_code,fault_name,severity,detail,sensor_type,active)
+                   VALUES(?,?,?,?,?,?,?,1)""",
+                (ts, node, code, name, severity, detail, sensor_type),
+            )
+            self._db.commit()
+            return cur.lastrowid
 
     def clear_fault(self, fault_id: int, ts: float):
         self._exec("UPDATE faults SET active=0, cleared_ts=? WHERE id=?", (ts, fault_id))
+
+    def resolve_fault(self, node: Optional[int], code: int, ts: float) -> bool:
+        """Resolve any active fault matching node and code."""
+        with self._lock:
+            if node is not None:
+                cur = self._db.execute(
+                    "UPDATE faults SET active=0, cleared_ts=? WHERE active=1 AND node_id=? AND fault_code=?",
+                    (ts, node, code)
+                )
+            else:
+                cur = self._db.execute(
+                    "UPDATE faults SET active=0, cleared_ts=? WHERE active=1 AND node_id IS NULL AND fault_code=?",
+                    (ts, code)
+                )
+            self._db.commit()
+            return cur.rowcount > 0
 
     def insert_anomaly(self, ts: float, node: int, feature: str, method: str, score: float, classification: str, detail: str):
         self._exec(
@@ -312,6 +349,13 @@ class Storage:
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM faults ORDER BY ts DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def node_faults(self, node_id: int, limit: int = 100) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM faults WHERE node_id=? ORDER BY ts DESC LIMIT ?", (node_id, limit)
             ).fetchall()
         return [dict(r) for r in rows]
 
