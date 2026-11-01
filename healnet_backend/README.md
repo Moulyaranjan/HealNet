@@ -28,19 +28,21 @@ The message format is identical either way, so moving to direct Wi-Fi MQTT later
 ```bash
 pip install -r requirements.txt
 mosquitto -c mosquitto.conf -v            # terminal 1  (install Mosquitto 2.x first)
-python processor.py                       # terminal 2  backend
-python monitor.py                         # terminal 3  live view of every topic
-python simulator.py --demo                # terminal 4  no hardware: scripted faults (~5 min)
+python processor.py                       # terminal 2  backend processor
+python api.py                             # terminal 3  local REST API (http://127.0.0.1:8000/docs)
+python monitor.py                         # terminal 4  live MQTT monitor
+python simulator.py --demo                # terminal 5  no hardware: scripted faults (~5 min)
 ```
 
-With the real coordinator plugged in, replace step 4 with:
+With the real coordinator plugged in, replace step 5 with:
 
 ```bash
-python serial_bridge.py                   # auto-detects CP210x/CH340; or --port COM5 / /dev/ttyUSB0
+python serial_bridge.py                   # auto-detects or use --port COM14
+# Note: COM14 = Coordinator ESP32. Do NOT open COM9 (Node 1) or COM11 (Node 2).
 ```
 
-Test the bridge without hardware: `python simulator.py --mode stdout | python serial_bridge.py --stdin`
-Offline unit tests (no broker needed): `python -m unittest discover -s tests -v`
+Offline unit tests (41 tests): `python -m unittest discover tests -v`
+Train and evaluate ML models: `python ml_pipeline.py`
 Windows note: the Mosquitto installer does not add itself to PATH – run it from `C:\Program Files\mosquitto`.
 
 ## Coordinator firmware format (NO FIRMWARE MODIFICATION REQUIRED)
@@ -146,7 +148,20 @@ A one-off spike is published as an anomaly but only *sustained* single-node devi
 
 ## Files
 
-`config.py` all settings (override with `HEALNET_*` env vars) · `protocol.py` serial format ↔ MQTT · `serial_bridge.py` · `processor.py` · `anomaly.py` · `storage.py` (tables: readings, status_events, faults, anomalies, route_events, *recovery_events reserved*) · `simulator.py` · `monitor.py` · `mosquitto.conf` · `tests/`
+* `config.py` — Centralized settings (overridable with `HEALNET_*` env vars).
+* `protocol.py` — Serial line decoder, format compatibility adapter (`adapt_sensor_payload`), MQTT translation.
+* `serial_bridge.py` — USB serial to MQTT bridge with disk spooling and coordinator liveness tracking.
+* `processor.py` — Primary backend stream processor: validation, fault detection, ML integration, SQLite writes.
+* `storage.py` — SQLite database engine with WAL mode: readings, status events, faults, anomalies, route events, system events, recovery events.
+* `anomaly.py` — Real-time sensor anomaly detection: Median/MAD, rate-of-change, multivariate Isolation Forest, cross-node correlation.
+* `ml_pipeline.py` — Offline ML training, model evaluation (IsolationForest, LOF, One-Class SVM), metrics reporting, model persistence (`models/`).
+* `edge_metrics.py` — Edge computing resource tracking (CPU, RAM, disk via psutil) and processing latency measurement.
+* `api.py` — Local FastAPI REST server exposing sensor readings, node health, faults, anomalies, edge metrics, and ML metadata.
+* `simulator.py` — Coordinator and sensor node simulator for testing without physical hardware.
+* `monitor.py` — Live terminal subscriber for all MQTT topics.
+* `mosquitto.conf` — Local Mosquitto 2.x broker configuration.
+* `tests/test_backend.py` — Core protocol, sequence, fault detection, and coordinator format unit tests.
+* `tests/test_full_system.py` — ML pipeline, edge metrics, FastAPI endpoints, and recovery event integration tests.
 
 ## Node-RED
 

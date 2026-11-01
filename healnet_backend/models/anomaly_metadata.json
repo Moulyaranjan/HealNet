@@ -1,0 +1,42 @@
+{
+  "model_type": "IsolationForest",
+  "trained_at": "2026-11-01T11:30:10.282566+00:00",
+  "training_samples": 237,
+  "synthetic": true,
+  "features": [
+    "temp",
+    "hum",
+    "light",
+    "temp_roll_mean",
+    "hum_roll_mean",
+    "light_roll_mean",
+    "temp_roll_std",
+    "hum_roll_std",
+    "light_roll_std",
+    "temp_roc",
+    "hum_roc",
+    "light_roc",
+    "temp_diff_node",
+    "hum_diff_node",
+    "light_diff_node"
+  ],
+  "rolling_window": 10,
+  "evaluation": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "accuracy": 1.0,
+    "fpr": 0.0,
+    "fnr": 0.0,
+    "confusion_matrix": [
+      [
+        63,
+        0
+      ],
+      [
+        0,
+        40
+      ]
+    ]
+  }
+}

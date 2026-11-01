@@ -22,6 +22,7 @@ from collections import deque
 import config
 import protocol
 from anomaly import AnomalyEngine
+from edge_metrics import get_metrics
 from mqtt_utils import connect_async, make_client, publish_json
 from storage import Storage
 
@@ -84,12 +85,14 @@ class Processor:
         self.mqtt_ok = False
         self.counters = {"messages": 0, "rejected": 0, "published": 0}
         self.pending = deque()               # anomalies waiting for cross-node classification
+        self.metrics = get_metrics()
 
         self.client = make_client("healnet-processor", config.T_BACKEND, {"status": "offline"}, persistent=True)
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
 
+        self.db.insert_system_event("backend_startup", "HEALNET processor initialized", "INFO")
         self._warm_start()
 
     # =====================================================================
@@ -116,9 +119,11 @@ class Processor:
     def _on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code.is_failure:
             log.error("MQTT connect refused: %s", reason_code)
+            self.db.insert_system_event("mqtt_refused", f"Connect refused: {reason_code}", "ERROR")
             return
         self.mqtt_ok = True
         log.info("MQTT connected (session_present=%s)", flags.session_present)
+        self.db.insert_system_event("mqtt_connect", f"Connected to {config.MQTT_HOST}:{config.MQTT_PORT}", "INFO")
         for n in config.NODE_IDS:
             client.subscribe(config.t_data(n), qos=1)
         client.subscribe(config.T_COORDINATOR, qos=1)
@@ -129,29 +134,51 @@ class Processor:
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         self.mqtt_ok = False
         log.warning("MQTT disconnected (%s) - paho will keep reconnecting; broker queues QoS1 for us", reason_code)
+        self.db.insert_system_event("mqtt_disconnect", f"Disconnected from MQTT broker ({reason_code})", "WARNING")
 
     def _on_message(self, client, userdata, msg):
-        try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("payload is not an object")
-        except Exception as exc:
-            self.counters["rejected"] += 1
-            log.warning("bad JSON on %s: %s", msg.topic, exc)
-            return
-        self.counters["messages"] += 1
-        try:
-            with self.lock:
-                if msg.topic == config.T_COORDINATOR:
-                    self._on_coordinator(payload)
-                elif msg.topic == config.T_BRIDGE:
-                    self._on_bridge(payload)
-                elif msg.topic == config.T_COORD_EVENT:
-                    log.info("coordinator event: %s", payload)
-                else:
-                    self._on_data(msg.topic, payload)
-        except Exception:
-            log.exception("processing error on %s", msg.topic)
+        with self.metrics.track("mqtt_processing"):
+            try:
+                payload = json.loads(msg.payload.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("payload is not an object")
+            except Exception as exc:
+                self.counters["rejected"] += 1
+                log.warning("bad JSON on %s: %s", msg.topic, exc)
+                return
+            self.counters["messages"] += 1
+            self.metrics.inc_messages(1)
+            try:
+                with self.lock:
+                    if msg.topic == config.T_COORDINATOR:
+                        self._on_coordinator(payload)
+                    elif msg.topic == config.T_BRIDGE:
+                        self._on_bridge(payload)
+                    elif msg.topic == config.T_COORD_EVENT:
+                        self._on_coordinator_event(payload)
+                    else:
+                        self._on_data(msg.topic, payload)
+            except Exception:
+                log.exception("processing error on %s", msg.topic)
+
+    def _on_coordinator_event(self, p):
+        log.info("coordinator event: %s", p)
+        ev_type = str(p.get("event", "generic_event")).lower()
+        node_id = p.get("node_id") or p.get("node")
+        msg = str(p.get("message") or p.get("detail", ""))
+        now = time.time()
+
+        if "recovery" in ev_type or "recovery" in msg.lower():
+            self.db.insert_recovery_event(
+                now, node_id, method="manual_button", trigger_type="coordinator_button",
+                result="SUCCESS", detail=f"{ev_type}: {msg}")
+            self.db.insert_system_event(
+                "coordinator_recovery", f"Recovery on node {node_id}: {msg}", "INFO")
+        elif "fail" in ev_type:
+            self.db.insert_system_event(
+                "simulated_failure", f"Failure simulation on node {node_id}: {msg}", "WARNING")
+        else:
+            self.db.insert_system_event("coordinator_event", f"{ev_type}: {msg}", "INFO")
 
     def pub(self, topic, payload, qos=0, retain=False):
         if publish_json(self.client, topic, payload, qos, retain):
@@ -266,7 +293,8 @@ class Processor:
 
         self._set_status(st, ONLINE, "packet received")
         self._check_route(st, clean)
-        self._check_sensors(st, clean)
+        with self.metrics.track("fault_detection"):
+            self._check_sensors(st, clean)
 
         # ---- anomaly detection (only on trustworthy readings) -------------
         anomaly = None
@@ -274,13 +302,15 @@ class Processor:
                   and None not in (clean["temp"], clean["hum"], clean["light"])
                   and self._in_range(clean))
         if usable:
-            anomaly = self.engine.process(st.node_id, clean["rx_ts"], clean["temp"], clean["hum"], clean["light"])
+            with self.metrics.track("ml_inference"):
+                anomaly = self.engine.process(st.node_id, clean["rx_ts"], clean["temp"], clean["hum"], clean["light"])
             self._handle_anomaly(st, clean, anomaly)
             clean["anomaly"] = anomaly.anomalous
             clean["anomaly_score"] = anomaly.score
 
         clean["flags"] = flags
-        self.db.insert_reading(self._row(clean))
+        with self.metrics.track("db_write"):
+            self.db.insert_reading(self._row(clean))
 
         out = {
             "node": st.node_id, "seq": seq, "ts": clean["rx_ts"],
@@ -358,6 +388,7 @@ class Processor:
     def _handle_anomaly(self, st, c, result):
         st.recent_flags.append(result.anomalous)
         if result.anomalous:
+            self.metrics.inc_anomalies(1)
             st.clean_run = 0
             # Wait one sensor interval (+margin) before classifying, so the other node's
             # sample for the same moment has arrived. See release_pending().
@@ -473,6 +504,9 @@ class Processor:
         now = time.time()
         fid = self.db.open_fault(now, st.node_id or None, code, name, severity, detail)
         st.faults[code] = {"id": fid, "detail": detail, "ts": now}
+        self.metrics.inc_faults(1)
+        self.db.insert_system_event(
+            "fault_opened", f"FAULT {code} {name} node={st.node_id or '-'}: {detail}", severity)
         log.warning("FAULT %d %s node=%s: %s", code, name, st.node_id or "-", detail)
         self.pub(config.T_FAULT, {
             "id": fid, "ts": round(now, 3), "fault_code": code, "fault": name, "severity": severity,
@@ -485,6 +519,8 @@ class Processor:
         now = time.time()
         self.db.clear_fault(info["id"], now)
         name, severity = config.FAULTS[code]
+        self.db.insert_system_event(
+            "fault_cleared", f"FAULT {code} {name} node={st.node_id or '-'} CLEARED: {detail}", "INFO")
         log.info("FAULT %d %s node=%s CLEARED after %.0f s", code, name, st.node_id or "-", now - info["ts"])
         self.pub(config.T_FAULT, {
             "id": info["id"], "ts": round(now, 3), "fault_code": code, "fault": name, "severity": severity,
