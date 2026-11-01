@@ -1,0 +1,4 @@
+paho-mqtt>=2.0
+pyserial>=3.5
+numpy>=1.26
+scikit-learn>=1.3
