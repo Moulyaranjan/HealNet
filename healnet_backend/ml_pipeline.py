@@ -25,6 +25,7 @@ import logging
 import os
 import sqlite3
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -210,42 +211,50 @@ def generate_synthetic_dataset(
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Build a labelled synthetic dataset for two virtual nodes.
+    Build a realistic labelled synthetic dataset for two virtual nodes.
 
-    Parameters
-    ----------
-    n_normal   : total normal samples (split evenly across nodes).
-    n_abnormal : total abnormal samples (split evenly across nodes).
-    seed       : RNG seed for reproducibility.
-
-    Returns
-    -------
-    X : ndarray of shape (n_normal + n_abnormal, 3)  – raw (temp, hum, light)
-    y : ndarray of shape (n_normal + n_abnormal,)    – 0=normal, 1=abnormal
+    Normal readings follow continuous physical dynamics (diurnal cycles + sensor noise).
+    Abnormal readings (faults/anomalies) are injected into episodes distributed throughout
+    the timeline, ensuring realistic rolling statistics and no train/test data leakage.
     """
     rng = np.random.default_rng(seed)
 
     log.info(
-        "Generating synthetic dataset: %d normal + %d abnormal samples",
+        "Generating synthetic dataset: %d normal + %d abnormal samples distributed over timeline",
         n_normal, n_abnormal,
     )
 
-    # Generate for two virtual nodes and concatenate
-    normal_n1   = _generate_normal_samples(n_normal  // 2, node_id=1, rng=rng)
-    normal_n2   = _generate_normal_samples(n_normal  - n_normal // 2, node_id=2, rng=rng)
-    abnormal_n1 = _generate_abnormal_samples(n_abnormal // 2, node_id=1, rng=rng)
-    abnormal_n2 = _generate_abnormal_samples(n_abnormal - n_abnormal // 2, node_id=2, rng=rng)
+    n_total = n_normal + n_abnormal
+    n1_total = n_total // 2
+    n2_total = n_total - n1_total
 
-    X_normal   = np.vstack([normal_n1,   normal_n2])
-    X_abnormal = np.vstack([abnormal_n1, abnormal_n2])
+    n1_ab = n_abnormal // 2
+    n2_ab = n_abnormal - n1_ab
 
-    X = np.vstack([X_normal, X_abnormal])
-    y = np.concatenate([
-        np.zeros(len(X_normal),   dtype=int),   # 0 = normal
-        np.ones(len(X_abnormal),  dtype=int),   # 1 = abnormal
-    ])
+    # Generate continuous baseline time series for both nodes
+    X1 = _generate_normal_samples(n1_total, node_id=1, rng=rng)
+    y1 = np.zeros(n1_total, dtype=int)
+    if n1_ab > 0:
+        idx1 = rng.choice(n1_total, size=n1_ab, replace=False)
+        X1[idx1] = _generate_abnormal_samples(n1_ab, node_id=1, rng=rng)
+        y1[idx1] = 1
 
-    log.debug("Synthetic X shape: %s, y shape: %s", X.shape, y.shape)
+    X2 = _generate_normal_samples(n2_total, node_id=2, rng=rng)
+    y2 = np.zeros(n2_total, dtype=int)
+    if n2_ab > 0:
+        idx2 = rng.choice(n2_total, size=n2_ab, replace=False)
+        X2[idx2] = _generate_abnormal_samples(n2_ab, node_id=2, rng=rng)
+        y2[idx2] = 1
+
+    # Interleave node 1 and node 2 readings to simulate alternating network traffic
+    X = np.empty((n_total, 3), dtype=float)
+    y = np.empty(n_total, dtype=int)
+    X[0::2] = X1[:len(X[0::2])]
+    X[1::2] = X2[:len(X[1::2])]
+    y[0::2] = y1[:len(y[0::2])]
+    y[1::2] = y2[:len(y[1::2])]
+
+    log.debug("Synthetic X shape: %s, y shape: %s (realistic timeline)", X.shape, y.shape)
     return X, y
 
 
@@ -311,8 +320,16 @@ def engineer_features(
         roc[1:] = col[1:] - col[:-1]
         # First sample has no predecessor → 0
 
-        # ---- inter-node diff (global mean proxy) -------------------------
-        diff_node = col - np.mean(col)
+        # ---- inter-node diff (causal EMA proxy, no data leakage) ----------
+        # Using an exponential moving average as a causal reference avoids
+        # the data-leakage of subtracting the global batch mean, which would
+        # let test-set values influence training features.
+        alpha = 0.1
+        ema = np.zeros(N)
+        ema[0] = col[0]
+        for _ema_i in range(1, N):
+            ema[_ema_i] = alpha * col[_ema_i] + (1.0 - alpha) * ema[_ema_i - 1]
+        diff_node = col - ema
 
         # Store: 3 base + 3 roll_mean + 3 roll_std + 3 roc + 3 diff_node
         out[:, 3 + col_idx]  = roll_mean
@@ -773,6 +790,7 @@ class ModelManager:
         self._model:  Any | None = None
         self._scaler: Any | None = None
         self._meta:   dict[str, Any] = {}
+        self._buffers: dict[int, deque] = {1: deque(maxlen=ROLLING_WINDOW), 2: deque(maxlen=ROLLING_WINDOW)}
 
     # ------------------------------------------------------------------
     # load()
@@ -829,9 +847,14 @@ class ModelManager:
                 )
                 return False, 0.0
 
-        raw = np.array([[temp, hum, light]], dtype=float)
-        eng = engineer_features(raw, window=ROLLING_WINDOW)
-        eng_sc = self._scaler.transform(eng)
+        if node_id not in self._buffers:
+            self._buffers[node_id] = deque(maxlen=ROLLING_WINDOW)
+        self._buffers[node_id].append([float(temp), float(hum), float(light)])
+
+        raw_window = np.array(list(self._buffers[node_id]), dtype=float)
+        eng_window = engineer_features(raw_window, window=ROLLING_WINDOW)
+        eng_latest = eng_window[-1:]  # Single row with accurate rolling features matching training
+        eng_sc = self._scaler.transform(eng_latest)
 
         raw_pred  = self._model.predict(eng_sc)[0]
         anomalous = bool(raw_pred == -1)
@@ -990,7 +1013,7 @@ if __name__ == "__main__":
         log.info("=" * 60)
         if not os.path.isfile(EVAL_REPORT_PATH) and not os.path.isfile(METADATA_PATH):
             log.warning("No evaluation report or metadata found at %s. Please train first with --train.", EVAL_REPORT_PATH)
-            sys.exit(1)
+            os._exit(1)
 
         if os.path.isfile(EVAL_REPORT_PATH):
             with open(EVAL_REPORT_PATH, "r", encoding="utf-8") as fh:
@@ -1003,7 +1026,7 @@ if __name__ == "__main__":
                 meta = json.load(fh)
             print(f"\nMetadata Model: {meta.get('model_type')}")
             print(f"Evaluation: {meta.get('evaluation')}")
-        sys.exit(0)
+        os._exit(0)
 
     if args.retrain:
         log.info("=" * 60)
@@ -1015,8 +1038,8 @@ if __name__ == "__main__":
             log.info("Retraining successful.")
         else:
             log.error("Retraining failed.")
-            sys.exit(1)
-        sys.exit(0)
+            os._exit(1)
+        os._exit(0)
 
     # Default action or --train: run training pipeline
     log.info("=" * 60)
@@ -1061,3 +1084,5 @@ if __name__ == "__main__":
         log.warning("ModelManager could not load model - skipping predict smoke-test.")
 
     log.info("Done.")
+
+    os._exit(0)

@@ -9,7 +9,11 @@ COM port assignments (current hardware):
   COM11 = Sensor Node 2   }
   COM14 = Coordinator ESP32 (only this one is opened by serial_bridge.py)
 """
+import logging
 import os
+
+# Disable asyncio task logging in Python 3.14 to prevent access violation crashes
+logging.logAsyncioTasks = False
 
 
 def _env(name, default, cast=str):
