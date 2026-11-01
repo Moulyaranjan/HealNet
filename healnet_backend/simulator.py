@@ -76,6 +76,7 @@ class SimNode:
             "rssi": random.randint(-62, -44),
             "uptime_ms": int((now - self.t0) * 1000),
             "via": self.via, "hops": self.hops,
+            "simulated": True,
         }
         self.seq += 1
         return msg
@@ -156,6 +157,20 @@ class Simulator:
             n.seq, n.boot, n.t0 = 0, n.boot + 1, time.time()
         elif base == "via":
             n.via, n.hops = (2, 1) if arg == "2" else ((1, 1) if arg == "1" else (None, 0))
+        elif base == "rec":
+            n.online = True
+            self.emit({
+                "type": "event", "event": "recovery_simulated", "node_id": n.id,
+                "message": f"Manual recovery triggered via button for node {n.id}",
+                "uptime_ms": int((time.time() - n.t0) * 1000),
+            })
+        elif base == "fail":
+            n.online = False
+            self.emit({
+                "type": "event", "event": "failure_simulated", "node_id": n.id,
+                "message": f"Communication failure simulated via button for node {n.id}",
+                "uptime_ms": int((time.time() - n.t0) * 1000),
+            })
         else:
             print(f"unknown command {cmd}", file=sys.stderr)
 

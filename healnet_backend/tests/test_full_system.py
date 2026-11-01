@@ -143,6 +143,79 @@ class TestAPIEndpoints(unittest.TestCase):
         r_m = self.client.get("/api/ml/metrics")
         self.assertIn(r_m.status_code, (200, 404))
 
+    def test_aliases_and_evaluation_endpoint(self):
+        # Health alias
+        r_health = self.client.get("/api/health")
+        self.assertEqual(r_health.status_code, 200)
+
+        # Readings aliases
+        r_readings = self.client.get("/api/readings")
+        self.assertEqual(r_readings.status_code, 200)
+        r_latest = self.client.get("/api/readings/latest")
+        self.assertEqual(r_latest.status_code, 200)
+
+        # Events alias
+        r_events = self.client.get("/api/events")
+        self.assertEqual(r_events.status_code, 200)
+
+        # ML Evaluation endpoint
+        r_eval = self.client.get("/api/ml/evaluation")
+        self.assertIn(r_eval.status_code, (200, 404))
+
+
+class TestProcessorIntegration(unittest.TestCase):
+    def setUp(self):
+        config.DB_PATH = os.path.join(tempfile.mkdtemp(), "t_proc_int.db")
+        self.p = P.Processor()
+
+    def test_fault_backend_lifecycle(self):
+        # Simulate MQTT disconnect
+        self.p._on_disconnect(None, None, None, "test_broker_down", None)
+        self.assertIn(config.FAULT_BACKEND, self.p._sys.faults)
+        self.assertFalse(self.p.mqtt_ok)
+
+        # Active faults should contain FAULT 6
+        active = self.p.db.active_faults()
+        self.assertTrue(any(f["fault_code"] == config.FAULT_BACKEND for f in active))
+
+        # Simulate reconnect
+        dummy_flags = type("Flags", (), {"session_present": False})()
+        dummy_rc = type("RC", (), {"is_failure": False})()
+        self.p._on_connect(type("Client", (), {"subscribe": lambda *a, **k: None})(), None, dummy_flags, dummy_rc, None)
+        self.assertTrue(self.p.mqtt_ok)
+        self.assertNotIn(config.FAULT_BACKEND, self.p._sys.faults)
+
+    def test_processor_metrics_sqlite_persistence(self):
+        before = self.p.metrics.snapshot()
+        self.p.metrics.inc_messages(10)
+        self.p.metrics.inc_faults(3)
+        self.p.publish_stats()
+        loaded = self.p.db.load_system_metrics()
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["messages_total"], before["messages_total"] + 10)
+        self.assertEqual(loaded["faults_total"], before["faults_total"] + 3)
+
+
+class TestSerialBridgeLock(unittest.TestCase):
+    def test_lock_acquisition_and_release(self):
+        from serial_bridge import _acquire_instance_lock, _release_instance_lock
+        td = tempfile.mkdtemp()
+        lock_file = os.path.join(td, "test_bridge.lock")
+
+        # First acquisition should succeed
+        ok, pid = _acquire_instance_lock(lock_file)
+        self.assertTrue(ok)
+        self.assertEqual(pid, os.getpid())
+
+        # Second acquisition should fail because current PID is still running
+        ok2, pid2 = _acquire_instance_lock(lock_file)
+        self.assertFalse(ok2)
+        self.assertEqual(pid2, os.getpid())
+
+        # Release lock
+        _release_instance_lock(lock_file)
+        self.assertFalse(os.path.exists(lock_file))
+
 
 class TestCoordinatorEventAndRecovery(unittest.TestCase):
     def setUp(self):

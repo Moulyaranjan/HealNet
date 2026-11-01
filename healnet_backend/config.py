@@ -111,6 +111,14 @@ API_PORT = _env("API_PORT", 8000, int)
 # --------------------------------------------------------------------------
 # Fault catalogue
 # --------------------------------------------------------------------------
+FAULT_SENSOR = 1
+FAULT_NODE_COMM = 2
+FAULT_NODE_POWER = 3
+FAULT_WIRELESS_LINK = 4
+FAULT_COORDINATOR = 5
+FAULT_BACKEND = 6
+FAULT_ABNORMAL_SENSOR = 7
+
 FAULTS = {
     1: ("SENSOR_FAILURE", "MEDIUM"),
     2: ("NODE_COMM_FAILURE", "HIGH"),          # node silent, cause (link vs power) not yet known

@@ -157,7 +157,7 @@ def translate(msg, rx_ts, bridge_seq):
         })
         return [(config.t_data(node), envelope, 1, False)]
 
-    if kind == "event":
+    if kind in ("event", "status"):
         payload = dict(msg)
         payload.pop("type", None)
         payload["rx_ts"] = round(rx_ts, 3)

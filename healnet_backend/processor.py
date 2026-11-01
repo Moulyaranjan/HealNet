@@ -26,6 +26,13 @@ from edge_metrics import get_metrics
 from mqtt_utils import connect_async, make_client, publish_json
 from storage import Storage
 
+try:
+    from ml_pipeline import ModelManager
+    _HAVE_ML_MODEL = True
+except ImportError:
+    _HAVE_ML_MODEL = False
+    ModelManager = None
+
 log = logging.getLogger("healnet.processor")
 
 UNKNOWN, ONLINE, STALE, OFFLINE = "UNKNOWN", "ONLINE", "STALE", "OFFLINE"
@@ -87,6 +94,13 @@ class Processor:
         self.pending = deque()               # anomalies waiting for cross-node classification
         self.metrics = get_metrics()
 
+        self.ml_model = ModelManager() if _HAVE_ML_MODEL else None
+        if self.ml_model:
+            try:
+                self.ml_model.load()
+            except Exception as exc:
+                log.warning("Could not pre-load ML model: %s", exc)
+
         self.client = make_client("healnet-processor", config.T_BACKEND, {"status": "offline"}, persistent=True)
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
@@ -124,6 +138,8 @@ class Processor:
         self.mqtt_ok = True
         log.info("MQTT connected (session_present=%s)", flags.session_present)
         self.db.insert_system_event("mqtt_connect", f"Connected to {config.MQTT_HOST}:{config.MQTT_PORT}", "INFO")
+        if config.FAULT_BACKEND in self._sys.faults:
+            self._clear_fault(self._sys, config.FAULT_BACKEND, "MQTT broker reconnected")
         for n in config.NODE_IDS:
             client.subscribe(config.t_data(n), qos=1)
         client.subscribe(config.T_COORDINATOR, qos=1)
@@ -135,6 +151,7 @@ class Processor:
         self.mqtt_ok = False
         log.warning("MQTT disconnected (%s) - paho will keep reconnecting; broker queues QoS1 for us", reason_code)
         self.db.insert_system_event("mqtt_disconnect", f"Disconnected from MQTT broker ({reason_code})", "WARNING")
+        self._open_fault(self._sys, config.FAULT_BACKEND, f"MQTT disconnected ({reason_code})")
 
     def _on_message(self, client, userdata, msg):
         with self.metrics.track("mqtt_processing"):
@@ -298,16 +315,29 @@ class Processor:
 
         # ---- anomaly detection (only on trustworthy readings) -------------
         anomaly = None
+        ml_anom, ml_score = False, 0.0
         usable = (clean["valid"] and clean["dht_ok"] and clean["ldr_ok"]
                   and None not in (clean["temp"], clean["hum"], clean["light"])
                   and self._in_range(clean))
         if usable:
             with self.metrics.track("ml_inference"):
                 anomaly = self.engine.process(st.node_id, clean["rx_ts"], clean["temp"], clean["hum"], clean["light"])
+                if self.ml_model:
+                    try:
+                        ml_anom, ml_score = self.ml_model.predict(
+                            clean["temp"], clean["hum"], clean["light"], node_id=st.node_id
+                        )
+                        if ml_anom:
+                            self.metrics.inc_anomalies(1)
+                    except Exception as exc:
+                        log.debug("ML model inference error: %s", exc)
+
             self._handle_anomaly(st, clean, anomaly)
             clean["anomaly"] = anomaly.anomalous
             clean["anomaly_score"] = anomaly.score
 
+        clean["ml_anomaly"] = ml_anom
+        clean["ml_score"] = ml_score
         clean["flags"] = flags
         with self.metrics.track("db_write"):
             self.db.insert_reading(self._row(clean))
@@ -320,6 +350,8 @@ class Processor:
             "flags": flags, "anomaly": bool(anomaly and anomaly.anomalous),
             "anomaly_score": anomaly.score if anomaly else None,
             "anomaly_class": "pending" if (anomaly and anomaly.anomalous) else None,
+            "ml_anomaly": ml_anom,
+            "ml_score": ml_score,
             "status": st.status,
         }
         self.pub(config.t_processed(st.node_id), out, qos=0)
@@ -584,11 +616,17 @@ class Processor:
                         self._set_status(st, STALE, f"{age:.0f} s since last packet")
 
     def publish_loop(self):
-        last_status = last_summary = last_stats = last_purge = 0.0
+        last_status = last_summary = last_stats = last_purge = last_metrics = 0.0
         while not self.stop.wait(1.0):
             self.watchdog_tick()
             now = time.time()
             with self.lock:
+                if now - last_metrics >= 5.0:
+                    try:
+                        self.db.save_system_metrics(self.metrics.snapshot())
+                    except Exception as exc:
+                        log.debug("metrics save error: %s", exc)
+                    last_metrics = now
                 if now - last_status >= config.STATUS_REFRESH_S:
                     for st in self.nodes.values():
                         self.publish_status(st)
@@ -625,9 +663,16 @@ class Processor:
             "network_health_pct": round(health, 1)}, qos=1, retain=True)
 
     def publish_stats(self):
+        snap = self.metrics.snapshot()
+        try:
+            self.db.save_system_metrics(snap)
+        except Exception as exc:
+            log.debug("metrics save error: %s", exc)
         self.pub(config.T_STATS, {
             "ts": round(time.time(), 3), "uptime_s": round(time.time() - self.started),
-            "counters": self.counters, "db": self.db.counts(), "ml": self.engine.summary()}, qos=0)
+            "counters": self.counters, "db": self.db.counts(), "ml": self.engine.summary(),
+            "edge_metrics": snap,
+        }, qos=0)
 
     # =====================================================================
     def run(self):

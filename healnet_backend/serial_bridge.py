@@ -154,7 +154,7 @@ class Bridge:
             return
         self.lines += 1
         self.last_line_ts = now
-        if msg.get("type") in ("hb", "heartbeat", "status"):
+        if msg.get("type") in ("hb", "heartbeat") or (msg.get("type") == "status" and "node_id" not in msg and "node" not in msg):
             self.last_hb = msg
             return
         self.bridge_seq += 1
@@ -235,6 +235,37 @@ class Bridge:
         self.client.disconnect()
 
 
+def _acquire_instance_lock(lock_path):
+    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+    if os.path.exists(lock_path):
+        try:
+            with open(lock_path, "r") as f:
+                old_pid = int(f.read().strip())
+            import psutil
+            if psutil.pid_exists(old_pid):
+                return False, old_pid
+        except Exception:
+            pass
+    try:
+        with open(lock_path, "w") as f:
+            f.write(str(os.getpid()))
+        return True, os.getpid()
+    except Exception as exc:
+        log.warning("Could not write lock file: %s", exc)
+        return True, os.getpid()
+
+
+def _release_instance_lock(lock_path):
+    try:
+        if os.path.exists(lock_path):
+            with open(lock_path, "r") as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(lock_path)
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="HEALNET serial -> MQTT bridge")
     ap.add_argument("--port", default="", help="serial port (default: auto-detect)")
@@ -244,7 +275,16 @@ def main():
     args = ap.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
-    Bridge().run(args)
+
+    lock_path = os.path.join(config.SPOOL_DIR, "serial_bridge.lock")
+    acquired, pid = _acquire_instance_lock(lock_path)
+    if not acquired:
+        log.error("Another serial_bridge instance is already running (PID %d). Only one bridge may run to prevent serial conflicts.", pid)
+        sys.exit(1)
+    try:
+        Bridge().run(args)
+    finally:
+        _release_instance_lock(lock_path)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-11-01T11:55:09.972765+00:00",
+  "synthetic": true,
+  "training_samples": 237,
+  "test_samples": 103,
+  "best_model": "IsolationForest",
+  "best_f1": 1.0,
+  "models_evaluated": [
+    {
+      "model_name": "IsolationForest",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0,
+      "fpr": 0.0,
+      "fnr": 0.0,
+      "confusion_matrix": [
+        [
+          63,
+          0
+        ],
+        [
+          0,
+          40
+        ]
+      ]
+    },
+    {
+      "model_name": "LocalOutlierFactor",
+      "precision": 0.975609756097561,
+      "recall": 1.0,
+      "f1": 0.9876543209876543,
+      "accuracy": 0.9902912621359223,
+      "fpr": 0.015873015873015872,
+      "fnr": 0.0,
+      "confusion_matrix": [
+        [
+          62,
+          1
+        ],
+        [
+          0,
+          40
+        ]
+      ]
+    },
+    {
+      "model_name": "OneClassSVM",
+      "precision": 0.7142857142857143,
+      "recall": 1.0,
+      "f1": 0.8333333333333334,
+      "accuracy": 0.8446601941747572,
+      "fpr": 0.25396825396825395,
+      "fnr": 0.0,
+      "confusion_matrix": [
+        [
+          47,
+          16
+        ],
+        [
+          0,
+          40
+        ]
+      ]
+    }
+  ]
+}

@@ -103,6 +103,8 @@ def _err(msg: str, code: int = 400):
 # Sensor endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/sensors", summary="Latest reading for all nodes")
+@app.get("/api/readings", summary="Latest reading for all nodes (alias)")
+@app.get("/api/readings/latest", summary="Latest reading for all nodes (alias)")
 def get_sensors():
     """Return the most recent reading for every known sensor node."""
     db = _get_db()
@@ -111,6 +113,7 @@ def get_sensors():
 
 
 @app.get("/api/sensors/{node_id}/latest", summary="Latest reading for a single node")
+@app.get("/api/readings/{node_id}", summary="Latest reading for a single node (alias)")
 def get_sensor_latest(node_id: int):
     """Return the most recent reading for the specified node."""
     if node_id not in config.NODE_IDS:
@@ -123,6 +126,7 @@ def get_sensor_latest(node_id: int):
 
 
 @app.get("/api/sensors/{node_id}/history", summary="Historical readings for a node")
+@app.get("/api/nodes/{node_id}/readings", summary="Historical readings for a node (alias)")
 def get_sensor_history(
     node_id: int,
     limit: int = Query(default=100, ge=1, le=10000),
@@ -245,6 +249,7 @@ def get_anomaly_history(
 # System endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/system/health", summary="Backend health check")
+@app.get("/api/health", summary="Backend health check (alias)")
 def get_system_health():
     """
     Quick health check endpoint.
@@ -268,13 +273,22 @@ def get_system_health():
 def get_system_metrics():
     """
     Return edge-computing metrics: CPU, memory, disk usage and processing latencies.
-    Resource monitoring requires psutil to be installed.
+    Reads latest metrics saved by the background processor, enriched with local OS stats.
     """
+    db = _get_db()
+    proc_snap = db.load_system_metrics()
+    if proc_snap:
+        local_snap = get_metrics().snapshot()
+        proc_snap["api_uptime_s"] = local_snap["uptime_s"]
+        if "os" in local_snap and ("os" not in proc_snap or not proc_snap["os"].get("cpu_pct")):
+            proc_snap["os"] = local_snap["os"]
+        return _ok(proc_snap)
     snap = get_metrics().snapshot()
     return _ok(snap)
 
 
 @app.get("/api/system/events", summary="System event log")
+@app.get("/api/events", summary="System event log (alias)")
 def get_system_events(limit: int = Query(default=50, ge=1, le=1000)):
     """Return the most recent system events (MQTT connect/disconnect, bridge status, etc.)."""
     db = _get_db()
@@ -323,6 +337,27 @@ def get_ml_metrics():
     with open(meta_path, "r") as fh:
         meta = json.load(fh)
     return _ok(meta.get("evaluation", {}))
+
+
+@app.get("/api/ml/evaluation", summary="Detailed ML evaluation report")
+def get_ml_evaluation():
+    """
+    Return the complete evaluation report comparing IsolationForest,
+    LocalOutlierFactor and OneClassSVM with precision, recall, F1, accuracy, FPR, FNR.
+    """
+    import json
+    model_dir = os.path.join(os.path.dirname(__file__), "models")
+    report_path = os.path.join(model_dir, "evaluation_report.json")
+    if not os.path.exists(report_path):
+        meta_path = os.path.join(model_dir, "anomaly_metadata.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, "r") as fh:
+                meta = json.load(fh)
+            return _ok(meta)
+        _err("No evaluation report found. Train the model first: python ml_pipeline.py --train", 404)
+    with open(report_path, "r") as fh:
+        rep = json.load(fh)
+    return _ok(rep)
 
 
 # ---------------------------------------------------------------------------

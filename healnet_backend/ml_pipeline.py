@@ -69,6 +69,7 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(_MODULE_DIR, "models")
 MODEL_PATH = os.path.join(MODELS_DIR, "anomaly_model.joblib")
 METADATA_PATH = os.path.join(MODELS_DIR, "anomaly_metadata.json")
+EVAL_REPORT_PATH = os.path.join(MODELS_DIR, "evaluation_report.json")
 
 # ---------------------------------------------------------------------------
 # Feature column names (after engineering)
@@ -490,6 +491,8 @@ def save_model(
     *,
     synthetic: bool,
     training_samples: int,
+    all_results: list[dict[str, Any]] | None = None,
+    test_samples: int | None = None,
 ) -> None:
     """
     Persist the best model artefact and its metadata JSON.
@@ -501,6 +504,8 @@ def save_model(
     best_result      : evaluation metrics dict from evaluate_model().
     synthetic        : True when trained on generated data (required by §10).
     training_samples : number of samples used for training.
+    all_results      : list of evaluation dicts for all compared models.
+    test_samples     : number of test samples.
     """
     _ensure_models_dir()
 
@@ -508,9 +513,10 @@ def save_model(
     joblib.dump(payload, MODEL_PATH)
     log.info("Model saved -> %s", MODEL_PATH)
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     metadata = {
         "model_type":       best_result["model_name"],
-        "trained_at":       datetime.now(timezone.utc).isoformat(),
+        "trained_at":       now_iso,
         "training_samples": training_samples,
         "synthetic":        synthetic,          # §10 – clearly marked
         "features":         ENGINEERED_FEATURES,
@@ -528,6 +534,34 @@ def save_model(
     with open(METADATA_PATH, "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
     log.info("Metadata saved -> %s", METADATA_PATH)
+
+    # Save comprehensive evaluation report
+    report_models = []
+    candidates = all_results if all_results else [best_result]
+    for r in candidates:
+        report_models.append({
+            "model_name":       r["model_name"],
+            "precision":        r["precision"],
+            "recall":           r["recall"],
+            "f1":               r["f1"],
+            "accuracy":         r["accuracy"],
+            "fpr":              r["fpr"],
+            "fnr":              r["fnr"],
+            "confusion_matrix": r["confusion_matrix"],
+        })
+
+    eval_report = {
+        "timestamp":        now_iso,
+        "synthetic":        synthetic,
+        "training_samples": training_samples,
+        "test_samples":     test_samples or 0,
+        "best_model":       best_result["model_name"],
+        "best_f1":          best_result["f1"],
+        "models_evaluated": report_models,
+    }
+    with open(EVAL_REPORT_PATH, "w", encoding="utf-8") as fh:
+        json.dump(eval_report, fh, indent=2)
+    log.info("Evaluation report saved -> %s", EVAL_REPORT_PATH)
 
 
 def load_model() -> tuple[Any, StandardScaler] | tuple[None, None]:
@@ -649,6 +683,8 @@ def run_training_pipeline(
         best_result,
         synthetic=bool(synthetic),
         training_samples=len(X_train),
+        all_results=all_results,
+        test_samples=len(X_test),
     )
 
     return {
@@ -929,7 +965,17 @@ class ModelManager:
 # ============================================================================
 
 if __name__ == "__main__":
+    import argparse
     import sys
+
+    parser = argparse.ArgumentParser(description="HEALNET ML Anomaly Detection Pipeline")
+    parser.add_argument("--train", action="store_true", help="Train models on synthetic or database readings and persist the best")
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate/display stored model metrics and evaluation report")
+    parser.add_argument("--retrain", type=str, metavar="DB_PATH", help="Retrain using readings from specified SQLite database")
+    parser.add_argument("--n-normal", type=int, default=1500, help="Number of normal synthetic samples (default: 1500)")
+    parser.add_argument("--n-abnormal", type=int, default=150, help="Number of abnormal synthetic samples (default: 150)")
+
+    args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -938,24 +984,57 @@ if __name__ == "__main__":
         stream=sys.stdout,
     )
 
+    if args.evaluate and not args.train and not args.retrain:
+        log.info("=" * 60)
+        log.info("HEALNET ml_pipeline  —  evaluation report")
+        log.info("=" * 60)
+        if not os.path.isfile(EVAL_REPORT_PATH) and not os.path.isfile(METADATA_PATH):
+            log.warning("No evaluation report or metadata found at %s. Please train first with --train.", EVAL_REPORT_PATH)
+            sys.exit(1)
+
+        if os.path.isfile(EVAL_REPORT_PATH):
+            with open(EVAL_REPORT_PATH, "r", encoding="utf-8") as fh:
+                rep = json.load(fh)
+            print(f"\nEvaluation Report (generated: {rep.get('timestamp')})")
+            print(f"Synthetic: {rep.get('synthetic')} | Train: {rep.get('training_samples')} | Test: {rep.get('test_samples')}")
+            print_comparison_table(rep.get("models_evaluated", []))
+        elif os.path.isfile(METADATA_PATH):
+            with open(METADATA_PATH, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+            print(f"\nMetadata Model: {meta.get('model_type')}")
+            print(f"Evaluation: {meta.get('evaluation')}")
+        sys.exit(0)
+
+    if args.retrain:
+        log.info("=" * 60)
+        log.info("HEALNET ml_pipeline  —  retrain from database %s", args.retrain)
+        log.info("=" * 60)
+        mm = ModelManager()
+        ok = mm.retrain(args.retrain)
+        if ok:
+            log.info("Retraining successful.")
+        else:
+            log.error("Retraining failed.")
+            sys.exit(1)
+        sys.exit(0)
+
+    # Default action or --train: run training pipeline
     log.info("=" * 60)
     log.info("HEALNET ml_pipeline  —  full training run")
     log.info("=" * 60)
 
     t0 = time.perf_counter()
 
-    # Run the pipeline on synthetic data (no DB required)
     pipeline_result = run_training_pipeline(
-        n_normal=1500,
-        n_abnormal=150,
+        n_normal=args.n_normal,
+        n_abnormal=args.n_abnormal,
     )
 
     elapsed = time.perf_counter() - t0
     log.info("Pipeline completed in %.2f s", elapsed)
 
-    # ---- Quick smoke-test of the predict() function ----
+    # Smoke-test predict()
     log.info("Smoke-testing predict() ...")
-
     normal_sample   = {"temp": 24.0, "hum": 55.0, "light": 1800.0}
     abnormal_sample = {"temp": 55.0, "hum": 95.0, "light": 4095.0}
 
@@ -965,7 +1044,7 @@ if __name__ == "__main__":
     print(f"  Normal sample   -> anomalous={a_normal},   score={s_normal:.4f}")
     print(f"  Abnormal sample -> anomalous={a_abnormal}, score={s_abnormal:.4f}")
 
-    # ---- Quick smoke-test of ModelManager ----
+    # Smoke-test ModelManager
     log.info("Smoke-testing ModelManager ...")
     mm = ModelManager()
     if mm.load():
