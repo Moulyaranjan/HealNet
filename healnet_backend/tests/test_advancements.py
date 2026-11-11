@@ -37,8 +37,8 @@ class AdvCapture(P.Processor):
         return [p for (x, p) in self.out if x == t]
 
 
-def make_packet(node, seq, temp=27.5, hum=55.0, light=1850, valid=True, via=None, hops=0, forwarded_by=None, source=None, rx_ts=None):
-    return {
+def make_packet(node, seq, temp=27.5, hum=55.0, light=1850, valid=True, via=None, hops=0, forwarded_by=None, source=None, rx_ts=None, **extra):
+    pkt = {
         "type": "data",
         "node": node,
         "seq": seq,
@@ -53,6 +53,8 @@ def make_packet(node, seq, temp=27.5, hum=55.0, light=1850, valid=True, via=None
         "uptime_ms": seq * 2000,
         "rx_ts": rx_ts or time.time(),
     }
+    pkt.update(extra)
+    return pkt
 
 
 class TestAdvancements(unittest.TestCase):

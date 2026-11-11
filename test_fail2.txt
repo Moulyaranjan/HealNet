@@ -1,0 +1,6 @@
+STDOUT:
+============================= test session starts =============================
+collecting ... collected 1 item
+
+healnet_backend/tests/test_advancements.py::TestAdvancements::test_04_invalid_sensor_reading FAILED [100%]
+STDERR:
