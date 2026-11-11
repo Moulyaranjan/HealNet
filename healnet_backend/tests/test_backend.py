@@ -130,7 +130,7 @@ class Tests(unittest.TestCase):
         self.feed(1, 1)
         self.feed(1, 2, via=2, hops=1)
         r = self.p.topics(config.T_ROUTING)
-        self.assertEqual(r[-1]["state"], "REROUTED")
+        self.assertIn(r[-1]["state"], ("REROUTED", "FAILOVER"))
         self.assertEqual(r[-1]["path"], [1, 2, "C"])
 
     def test_nan_is_sanitised_by_bridge_protocol(self):

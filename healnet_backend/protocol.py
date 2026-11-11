@@ -91,6 +91,31 @@ def adapt_sensor_payload(msg):
                 out["uptime_ms"] = out[k]
                 break
 
+    # routing & forwarder metadata mapping
+    if out.get("forwarded_by") is None:
+        for k in ("forwarder", "fwd_by", "fwd"):
+            if k in out and out[k] is not None:
+                out["forwarded_by"] = out[k]
+                break
+
+    if out.get("source") is None:
+        for k in ("src", "source_node", "origin"):
+            if k in out and out[k] is not None:
+                out["source"] = out[k]
+                break
+
+    if "via" not in out:
+        for k in ("route_via", "hop_via", "forwarded_via"):
+            if k in out:
+                out["via"] = out[k]
+                break
+
+    if "hops" not in out:
+        for k in ("hop_count", "num_hops"):
+            if k in out and out[k] is not None:
+                out["hops"] = out[k]
+                break
+
     # timestamp mapping: if rx_ts is not present, check ts or timestamp
     if out.get("rx_ts") is None:
         for k in ("ts", "timestamp", "time"):
@@ -153,8 +178,10 @@ def translate(msg, rx_ts, bridge_seq):
             "schema": SCHEMA,
             "rx_ts": round(rx_ts, 3),        # authoritative timestamp: laptop clock at arrival
             "bridge_seq": bridge_seq,
-            "source": "serial",
         })
+        # Preserve source node name if present in adapted message, else default to "serial"
+        envelope["source"] = adapted.get("source") or "serial"
+        envelope["bridge_source"] = "serial"
         return [(config.t_data(node), envelope, 1, False)]
 
     if kind in ("event", "status"):

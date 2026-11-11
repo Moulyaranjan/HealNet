@@ -42,9 +42,37 @@ UNKNOWN, ONLINE, STALE, OFFLINE = "UNKNOWN", "ONLINE", "STALE", "OFFLINE"
 class NodeState:
     def __init__(self, node_id):
         self.node_id = node_id
+        # Legacy status for backwards compatibility (ONLINE, STALE, OFFLINE, UNKNOWN)
         self.status = UNKNOWN
         self.status_since = time.time()
-        self.last_rx_ts = 0.0            # bridge receive time of the newest live packet
+
+        # Decoupled state tracking (Advancements 2 & 7)
+        self.esp32_status = config.STATUS_UNKNOWN       # ONLINE / OFFLINE / UNKNOWN
+        self.esp32_status_since = time.time()
+        self.sensor_status = config.SENSOR_UNAVAILABLE  # AVAILABLE / DEGRADED / UNAVAILABLE
+        self.data_status = config.DATA_MISSING          # FRESH / STALE / INVALID / MISSING
+        self.route_status = config.ROUTE_DIRECT         # DIRECT / FAILOVER
+
+        # Failover State Machine (Advancement 5)
+        self.failover_state = config.STATE_NORMAL
+        self.failover_state_since = time.time()
+        self.forwarded_by = None
+        self.source = f"NODE{node_id}"
+
+        # Timestamps
+        self.last_rx_ts = 0.0            # bridge receive time of the newest live packet (direct or forwarded)
+        self.last_direct_rx_ts = 0.0     # newest direct packet from node ESP32 (via is None, hops == 0)
+        self.last_valid_rx_ts = 0.0      # newest packet with physically valid sensor readings
+
+        # Sensor data protection: preserve last healthy readings if corrupted packet arrives
+        self.last_valid_readings = {"temp": None, "hum": None, "light": None}
+
+        # Recovery verification tracking (Advancement 6)
+        self.recovery_start_ts = None
+        self.recovery_validation_count = 0
+        self.prev_fault = None
+        self.prev_route = None
+
         self.last_seq = None
         self.last_uptime = None
         self.last_boot = None
@@ -227,10 +255,13 @@ class Processor:
             return None, "missing/invalid seq"
         clean = {"node": node, "seq": seq}
         clean["rx_ts"] = float(p["rx_ts"]) if isinstance(p.get("rx_ts"), (int, float)) else time.time()
-        for key in ("uptime_ms", "boot", "rssi", "via", "hops", "bridge_seq"):
+        for key in ("uptime_ms", "boot", "rssi", "bridge_seq"):
             if isinstance(p.get(key), (int, float)) and not isinstance(p.get(key), bool):
                 clean[key] = int(p[key])
-        clean["hops"] = clean.get("hops", 0)
+        clean["via"] = int(p["via"]) if (isinstance(p.get("via"), (int, float)) and not isinstance(p.get("via"), bool)) else None
+        clean["hops"] = int(p["hops"]) if (isinstance(p.get("hops"), (int, float)) and not isinstance(p.get("hops"), bool)) else 0
+        clean["forwarded_by"] = p.get("forwarded_by")
+        clean["source"] = p.get("source") or f"NODE{node}"
         clean["valid"] = bool(p.get("valid", True))
         # sensor values: keep only finite numbers
         for key in ("temp", "hum", "light"):
@@ -316,8 +347,117 @@ class Processor:
             boot if boot is not None else st.last_boot
         st.rssi = clean.get("rssi", st.rssi)
 
-        self._set_status(st, ONLINE, "packet received")
-        self._check_route(st, clean)
+        # ------------------------------------------------------------------
+        # Decouple ESP32 status, Sensor availability, and Route (Advancements 2, 3, 5, 6, 7)
+        # ------------------------------------------------------------------
+        is_direct = (clean.get("via") is None) and (clean.get("hops", 0) == 0)
+        via = clean.get("via")
+        hops = clean.get("hops", 0)
+        forwarded_by = clean.get("forwarded_by") or (f"NODE{via}" if via is not None else None)
+
+        if is_direct:
+            # Direct wireless packet from this node's own ESP32
+            st.last_direct_rx_ts = max(st.last_direct_rx_ts, clean["rx_ts"])
+
+            # Check if recovering from active failover:
+            in_failover = (st.route_status == config.ROUTE_FAILOVER or st.failover_state == config.STATE_FAILOVER_ACTIVE)
+
+            if in_failover:
+                confirm_ts = now
+                duration_s = round(confirm_ts - (st.recovery_start_ts or now), 2)
+                prev_route = f"FAILOVER VIA NODE {st.route[0]}" if st.route[0] else (st.prev_route or "FAILOVER")
+                prev_fault = st.prev_fault or "NODE_COMM_FAILURE"
+
+                st.failover_state = config.STATE_RECOVERY_CONFIRMED
+                self.db.insert_recovery_event(
+                    ts=confirm_ts,
+                    node_id=st.node_id,
+                    method="automatic_direct_verification",
+                    trigger_type="direct_packet",
+                    attempt=1,
+                    result="SUCCESS",
+                    duration_s=duration_s,
+                    detail=f"Node {st.node_id} direct communication confirmed after {duration_s}s",
+                    start_ts=st.recovery_start_ts,
+                    previous_fault=prev_fault,
+                    prev_route=prev_route,
+                    new_route=config.ROUTE_DIRECT,
+                )
+                self.pub(config.T_RECOVERY, {
+                    "ts": round(confirm_ts, 3),
+                    "node": st.node_id,
+                    "event": "RECOVERY_CONFIRMED",
+                    "method": "automatic_direct_verification",
+                    "result": "SUCCESS",
+                    "duration_s": duration_s,
+                    "previous_route": prev_route,
+                    "new_route": config.ROUTE_DIRECT,
+                    "previous_fault": prev_fault,
+                    "detail": "Direct wireless communication restored and verified",
+                }, qos=1)
+
+                st.failover_state = config.STATE_NORMAL_RESTORED
+                st.route_status = config.ROUTE_DIRECT
+                self._update_route(st, None, 0, None, config.ROUTE_DIRECT, "Direct communication verified")
+                st.recovery_start_ts = None
+                st.prev_fault = None
+                st.prev_route = None
+                st.failover_state = config.STATE_NORMAL
+            else:
+                if st.route_status != config.ROUTE_DIRECT:
+                    self._update_route(st, None, 0, None, config.ROUTE_DIRECT, "Direct communication active")
+
+            if config.FAULT_NODE_COMM in st.faults:
+                self._clear_fault(st, config.FAULT_NODE_COMM, "packets received again")
+
+            st.esp32_status = config.STATUS_ONLINE
+            self._set_status(st, ONLINE, "direct packet received")
+
+        else:
+            # Forwarded packet: Node 2 is forwarding Node 1's physical sensors through CD4053
+            # Forwarded packet does NOT prove Node 1 ESP32 is online!
+            direct_age = (now - st.last_direct_rx_ts) if st.last_direct_rx_ts else float("inf")
+            if direct_age >= config.NODE_TIMEOUT_S:
+                st.esp32_status = config.STATUS_OFFLINE
+                self._set_status(st, OFFLINE, f"Node {st.node_id} ESP32 silent for {direct_age:.0f}s (sensors active via failover)")
+                if config.FAULT_NODE_COMM not in st.faults:
+                    self._open_fault(st, config.FAULT_NODE_COMM, f"Node {st.node_id} ESP32 silent for {direct_age:.0f}s; failover active via Node {via}")
+
+            if st.failover_state != config.STATE_FAILOVER_ACTIVE:
+                st.prev_route = "DIRECT"
+                st.prev_fault = "NODE_COMM_FAILURE"
+                st.failover_state = config.STATE_FAILOVER_ACTIVE
+                self.db.insert_system_event(
+                    "failover_active",
+                    f"FAILOVER_ACTIVE: Node {st.node_id} physical sensors accessed via Node {via} through CD4053 multiplexer",
+                    "WARNING"
+                )
+
+            st.route_status = config.ROUTE_FAILOVER
+            st.forwarded_by = forwarded_by
+            self._update_route(st, via, hops, forwarded_by, config.ROUTE_FAILOVER, f"Failover via Node {via}")
+
+            # Reset recovery validation count: forwarded packet cannot validate recovery of Node 1 ESP32
+            st.recovery_validation_count = 0
+
+        # Sensor health & valid reading cache
+        has_readings = clean["temp"] is not None and clean["hum"] is not None and clean["light"] is not None
+        is_valid = clean["valid"] and clean["dht_ok"] and clean["ldr_ok"] and has_readings and self._in_range(clean)
+
+        if is_valid:
+            st.last_valid_rx_ts = clean["rx_ts"]
+            st.last_valid_readings["temp"] = clean["temp"]
+            st.last_valid_readings["hum"] = clean["hum"]
+            st.last_valid_readings["light"] = clean["light"]
+            st.data_status = config.DATA_FRESH
+            st.sensor_status = config.SENSOR_AVAILABLE
+        else:
+            st.data_status = config.DATA_INVALID
+            if not clean["dht_ok"] and not clean["ldr_ok"]:
+                st.sensor_status = config.SENSOR_UNAVAILABLE
+            else:
+                st.sensor_status = config.SENSOR_DEGRADED
+
         with self.metrics.track("fault_detection"):
             self._check_sensors(st, clean)
 
@@ -355,12 +495,18 @@ class Processor:
             "temp": clean["temp"], "hum": clean["hum"], "light": clean["light"],
             "valid": clean["valid"], "dht_ok": clean["dht_ok"], "ldr_ok": clean["ldr_ok"],
             "rssi": st.rssi, "via": clean.get("via"), "hops": clean["hops"],
+            "forwarded_by": st.forwarded_by, "source": clean.get("source"),
             "flags": flags, "anomaly": bool(anomaly and anomaly.anomalous),
             "anomaly_score": anomaly.score if anomaly else None,
             "anomaly_class": "pending" if (anomaly and anomaly.anomalous) else None,
             "ml_anomaly": ml_anom,
             "ml_score": ml_score,
             "status": st.status,
+            "esp32_status": st.esp32_status,
+            "sensor_status": st.sensor_status,
+            "data_status": st.data_status,
+            "route_status": st.route_status,
+            "failover_state": st.failover_state,
         }
         self.pub(config.t_processed(st.node_id), out, qos=0)
         st.last_payload = out
@@ -461,19 +607,38 @@ class Processor:
                 self._open_fault(st, 7, f"sustained abnormal readings on this node only: {findings[0].detail}")
 
     # =====================================================================
-    # routing (future multi-hop; passes through whatever the coordinator reports)
+    # routing (Advancement 3, 5, 8: direct vs failover tracking & event logging)
     # =====================================================================
     def _check_route(self, st, c):
-        route = (c.get("via"), c["hops"])
-        if route != st.route:
-            old, st.route = st.route, route
-            state = "DIRECT" if route[0] is None and route[1] == 0 else "REROUTED"
-            path = [st.node_id] + ([route[0]] if route[0] is not None else []) + ["C"]
-            self.db.insert_route(c["rx_ts"], st.node_id, route[0], route[1], state)
+        via = c.get("via")
+        hops = c.get("hops", 0)
+        forwarded_by = c.get("forwarded_by") or (f"NODE{via}" if via is not None else None)
+        state = config.ROUTE_DIRECT if (via is None and hops == 0) else config.ROUTE_FAILOVER
+        self._update_route(st, via, hops, forwarded_by, state, detail="Packet routing", ts=c.get("rx_ts"))
+
+    def _update_route(self, st, via, hops, forwarded_by, state, detail="", ts=None):
+        route = (via, hops)
+        if route != st.route or state != st.route_status:
+            old, st.route, st.route_status, st.forwarded_by = st.route, route, state, forwarded_by
+            if isinstance(ts, (int, float)):
+                rx_ts = float(ts)
+            elif isinstance(detail, (int, float)):
+                rx_ts = float(detail)
+                detail = ""
+            else:
+                rx_ts = time.time()
+            path = [st.node_id] + ([via] if via is not None else []) + ["C"]
+            self.db.insert_route(rx_ts, st.node_id, via, hops, state, forwarded_by, str(detail))
             self.pub(config.T_ROUTING, {
-                "ts": round(c["rx_ts"], 3), "node": st.node_id, "state": state, "via": route[0],
-                "hops": route[1], "path": path, "previous": {"via": old[0], "hops": old[1]}}, qos=1)
-            log.info("node%d route %s via=%s hops=%s", st.node_id, state, route[0], route[1])
+                "ts": round(rx_ts, 3), "node": st.node_id, "state": state, "via": via,
+                "hops": hops, "forwarded_by": forwarded_by, "path": path,
+                "previous": {"via": old[0], "hops": old[1]}}, qos=1)
+            self.db.insert_system_event(
+                "route_change",
+                f"Node {st.node_id} route transitioned to {state} (via={via}, hops={hops}, fwd={forwarded_by})",
+                "INFO"
+            )
+            log.info("node%d route %s via=%s hops=%s forwarded_by=%s", st.node_id, state, via, hops, forwarded_by)
 
     # =====================================================================
     # coordinator / bridge liveness  ->  FAULT 5
@@ -586,44 +751,122 @@ class Processor:
         now = time.time()
         total = st.packets + st.lost
         self.pub(config.t_status(st.node_id), {
-            "node": st.node_id, "status": st.status, "since": round(st.status_since, 3),
+            "node": st.node_id,
+            "status": st.status,
+            "esp32_status": st.esp32_status,
+            "sensor_status": st.sensor_status,
+            "data_status": st.data_status,
+            "route_status": st.route_status,
+            "failover_state": st.failover_state,
+            "forwarded_by": st.forwarded_by,
+            "route_description": (f"FAILOVER VIA NODE {st.route[0]}" if st.route_status == config.ROUTE_FAILOVER else "DIRECT"),
+            "since": round(st.status_since, 3),
             "last_seen": round(st.last_rx_ts, 3) if st.last_rx_ts else None,
+            "last_direct_seen": round(st.last_direct_rx_ts, 3) if st.last_direct_rx_ts else None,
             "age_s": round(now - st.last_rx_ts, 1) if st.last_rx_ts else None,
-            "last_seq": st.last_seq, "rssi": st.rssi,
-            "packets": st.packets, "lost": st.lost, "duplicates": st.dup, "out_of_order": st.ooo,
-            "delayed": st.delayed, "reboots": st.reboots,
+            "direct_age_s": round(now - st.last_direct_rx_ts, 1) if st.last_direct_rx_ts else None,
+            "last_seq": st.last_seq,
+            "rssi": st.rssi,
+            "packets": st.packets,
+            "lost": st.lost,
+            "duplicates": st.dup,
+            "out_of_order": st.ooo,
+            "delayed": st.delayed,
+            "reboots": st.reboots,
             "loss_pct": round(100.0 * st.lost / total, 1) if total else 0.0,
-            "route": {"via": st.route[0], "hops": st.route[1]},
+            "route": {
+                "via": st.route[0],
+                "hops": st.route[1],
+                "state": st.route_status,
+                "forwarded_by": st.forwarded_by,
+            },
             "sensors": st.sensor_state,
             "active_faults": sorted(st.faults.keys()),
             "last": {k: st.last_payload.get(k) for k in ("temp", "hum", "light")},
+            "last_valid": st.last_valid_readings,
         }, qos=1, retain=True)
 
     def watchdog_tick(self):
-        """Runs every second: derive ONLINE / STALE / OFFLINE from packet age."""
+        """Runs every second: derive node hardware, sensor, data, and failover states."""
         now = time.time()
         with self.lock:
             self.release_pending(now)
             in_grace = ((now - self.started) < config.STARTUP_GRACE_S
                         or (now - self.coord_back_ts) < config.NODE_TIMEOUT_S)
             coordinator_down = self.coordinator_online is False or self.bridge_online is False
+
             for st in self.nodes.values():
-                if not st.last_rx_ts:
-                    continue
-                age = now - st.last_rx_ts
                 if coordinator_down:
-                    # We cannot see the nodes at all: this is FAULT 5, not a node failure.
+                    # We cannot see the nodes at all: this is FAULT 5, not an individual node failure.
                     if st.status != UNKNOWN:
                         self._set_status(st, UNKNOWN, "coordinator/bridge down - node state not observable")
+                        st.esp32_status = config.STATUS_UNKNOWN
+                        st.data_status = config.DATA_MISSING
                     continue
-                if age >= config.NODE_TIMEOUT_S:
-                    if st.status != OFFLINE and not in_grace:
-                        self._set_status(st, OFFLINE, f"no packet for {age:.0f} s")
-                        self._open_fault(st, 2, f"no packets for {age:.0f} s while coordinator is alive; "
-                                                "cause (link vs power vs crash) not determined by passive monitoring")
-                elif age >= config.NODE_STALE_S:
-                    if st.status == ONLINE:
-                        self._set_status(st, STALE, f"{age:.0f} s since last packet")
+
+                # Evaluate Node Communication and Freshness
+                if st.last_rx_ts:
+                    age = now - st.last_rx_ts
+                    direct_ts = min(st.last_direct_rx_ts, st.last_rx_ts) if st.last_direct_rx_ts else st.last_rx_ts
+                    direct_age = now - direct_ts
+
+                    if age >= config.NODE_TIMEOUT_S:
+                        # Total silence from node (no direct and no failover packets)
+                        if not in_grace:
+                            st.esp32_status = config.STATUS_OFFLINE
+                            st.data_status = config.DATA_MISSING
+                            st.sensor_status = config.SENSOR_UNAVAILABLE
+                            if st.status != OFFLINE:
+                                self._set_status(st, OFFLINE, f"no packet for {age:.0f} s")
+                                self._open_fault(
+                                    st, 2,
+                                    f"no packets for {age:.0f} s while coordinator is alive; "
+                                    "cause (link vs power vs crash) not determined by passive monitoring"
+                                )
+                                if st.failover_state == config.STATE_NORMAL:
+                                    st.failover_state = config.STATE_NODE_FAILURE_DETECTED
+                                    self.db.insert_system_event(
+                                        "node_failure_detected",
+                                        f"NODE_FAILURE_DETECTED: Node {st.node_id} silent for {age:.0f}s",
+                                        "WARNING"
+                                    )
+                                    st.failover_state = config.STATE_FAILOVER_INITIATED
+                                    self.db.insert_system_event(
+                                        "failover_initiated",
+                                        f"FAILOVER_INITIATED: Node {st.node_id} silent; waiting for failover data via CD4053",
+                                        "INFO"
+                                    )
+                    elif direct_age >= config.NODE_TIMEOUT_S:
+                        # Direct communication silent, but failover data is arriving
+                        if not in_grace:
+                            st.esp32_status = config.STATUS_OFFLINE
+                            if config.FAULT_NODE_COMM not in st.faults:
+                                self._open_fault(
+                                    st, 2,
+                                    f"no direct packets from Node {st.node_id} for {direct_age:.0f} s while coordinator is alive; "
+                                    "cause (link vs power vs crash) not determined by passive monitoring"
+                                )
+                            if age >= config.NODE_STALE_S:
+                                if st.data_status == config.DATA_FRESH:
+                                    st.data_status = config.DATA_STALE
+                    elif direct_age >= config.NODE_STALE_S:
+                        if st.esp32_status == config.STATUS_ONLINE:
+                            st.esp32_status = config.STATUS_STALE
+                            if st.status == ONLINE:
+                                self._set_status(st, STALE, f"{direct_age:.0f} s since last packet")
+                    elif age >= config.NODE_STALE_S:
+                        if st.status == ONLINE:
+                            self._set_status(st, STALE, f"{age:.0f} s since last packet")
+                        if st.data_status == config.DATA_FRESH:
+                            st.data_status = config.DATA_STALE
+                    else:
+                        if st.data_status not in (config.DATA_INVALID,):
+                            st.data_status = config.DATA_FRESH
+                elif not in_grace:
+                    # Never received anything at all
+                    st.esp32_status = config.STATUS_UNKNOWN
+                    st.sensor_status = config.SENSOR_UNAVAILABLE
+                    st.data_status = config.DATA_MISSING
 
     def publish_loop(self):
         last_status = last_summary = last_stats = last_purge = last_metrics = 0.0
@@ -659,18 +902,59 @@ class Processor:
             for code, info in st.faults.items():
                 active.append({"node": st.node_id or None, "fault_code": code,
                                "fault": config.FAULTS[code][0], "since": round(info["ts"], 3)})
-        health = 100.0 * (counts[ONLINE] + 0.5 * counts[STALE]) / total if total else 0.0
+
+        any_failover = any(st.route_status == config.ROUTE_FAILOVER for st in self.nodes.values())
+        any_recovery = any(st.failover_state in (config.STATE_RECOVERY_INITIATED, config.STATE_RECOVERY_VALIDATION) for st in self.nodes.values())
+
         if self.coordinator_online is False or self.bridge_online is False:
             health = 0.0
+            network_status = "OFFLINE"
+        elif any_failover:
+            # Advancement 9: Node failure with active sensor failover is "DEGRADED BUT OPERATIONAL"
+            network_status = "DEGRADED BUT OPERATIONAL"
+            health = 80.0
+        elif counts[OFFLINE] > 0:
+            network_status = "DEGRADED"
+            health = 50.0
+        elif counts[STALE] > 0:
+            network_status = "DEGRADED"
+            health = 75.0
+        else:
+            network_status = "HEALTHY"
+            health = 100.0
+
         node_faults = sum(1 for a in active if a["node"] and a["fault_code"] in (1, 7))
-        health = max(0.0, health - 5.0 * node_faults)
+        health = max(0.0, min(100.0, health - 5.0 * node_faults))
+
+        node_summaries = {}
+        for nid, st in self.nodes.items():
+            node_summaries[f"node{nid}"] = {
+                "esp32_status": st.esp32_status,
+                "sensor_status": st.sensor_status,
+                "data_status": st.data_status,
+                "route_status": st.route_status,
+                "failover_state": st.failover_state,
+                "route": {"via": st.route[0], "hops": st.route[1], "forwarded_by": st.forwarded_by},
+            }
+
         self.pub(config.T_SUMMARY, {
-            "ts": round(time.time(), 3), "total_nodes": total, "online": counts[ONLINE], "stale": counts[STALE],
-            "offline": counts[OFFLINE], "unknown": counts[UNKNOWN], "recovering": 0,
+            "ts": round(time.time(), 3),
+            "total_nodes": total,
+            "online": counts[ONLINE],
+            "stale": counts[STALE],
+            "offline": counts[OFFLINE],
+            "unknown": counts[UNKNOWN],
+            "recovering": sum(1 for st in self.nodes.values() if st.failover_state in (config.STATE_RECOVERY_INITIATED, config.STATE_RECOVERY_VALIDATION)),
             "coordinator": ("online" if self.coordinator_online else
                             "offline" if self.coordinator_online is False else "unknown"),
-            "active_fault_count": len(active), "active_faults": active,
-            "network_health_pct": round(health, 1)}, qos=1, retain=True)
+            "network_status": network_status,
+            "failover_active": any_failover,
+            "recovery_status": "ACTIVE" if any_recovery else "IDLE",
+            "active_fault_count": len(active),
+            "active_faults": active,
+            "network_health_pct": round(health, 1),
+            "nodes": node_summaries,
+        }, qos=1, retain=True)
 
     def publish_stats(self):
         snap = self.metrics.snapshot()

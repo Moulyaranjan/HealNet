@@ -4,10 +4,11 @@ HEALNET backend configuration.
 Every value can be overridden with an environment variable (HEALNET_<NAME>),
 so the same code runs unchanged on a laptop, a Raspberry Pi, or in Docker.
 
-COM port assignments (current hardware):
-  COM9  = Sensor Node 1   } Do NOT open these from Python backend code.
-  COM11 = Sensor Node 2   }
-  COM14 = Coordinator ESP32 (only this one is opened by serial_bridge.py)
+Hardware Serial Architecture:
+  Coordinator ESP32 is the SINGLE hardware serial input to the backend.
+  Node 1 and Node 2 do NOT have direct serial connections to the backend;
+  they communicate wirelessly with the Coordinator via ESP-NOW.
+  serial_bridge.py connects only to the Coordinator ESP32 (or stdin in simulation).
 """
 import logging
 import os
@@ -23,6 +24,44 @@ def _env(name, default, cast=str):
     if cast is bool:
         return raw.strip().lower() in ("1", "true", "yes", "on")
     return cast(raw)
+
+
+# --------------------------------------------------------------------------
+# Node, Sensor, and Route State Definitions
+# --------------------------------------------------------------------------
+# Node (ESP32 hardware) Status
+STATUS_ONLINE = "ONLINE"
+STATUS_STALE = "STALE"
+STATUS_OFFLINE = "OFFLINE"
+STATUS_UNKNOWN = "UNKNOWN"
+
+# Physical Sensor Availability
+SENSOR_AVAILABLE = "AVAILABLE"
+SENSOR_DEGRADED = "DEGRADED"
+SENSOR_UNAVAILABLE = "UNAVAILABLE"
+
+# Sensor Data Freshness / Availability
+DATA_FRESH = "FRESH"
+DATA_STALE = "STALE"
+DATA_INVALID = "INVALID"
+DATA_MISSING = "MISSING"
+
+# Route Status
+ROUTE_DIRECT = "DIRECT"
+ROUTE_FAILOVER = "FAILOVER"
+
+# Failover & Recovery State Machine (8 States)
+STATE_NORMAL = "NORMAL"
+STATE_NODE_FAILURE_DETECTED = "NODE_FAILURE_DETECTED"
+STATE_FAILOVER_INITIATED = "FAILOVER_INITIATED"
+STATE_FAILOVER_ACTIVE = "FAILOVER_ACTIVE"
+STATE_RECOVERY_INITIATED = "RECOVERY_INITIATED"
+STATE_RECOVERY_VALIDATION = "RECOVERY_VALIDATION"
+STATE_RECOVERY_CONFIRMED = "RECOVERY_CONFIRMED"
+STATE_NORMAL_RESTORED = "NORMAL_RESTORED"
+
+# Consecutive valid direct packets required to confirm recovery
+RECOVERY_VALIDATION_PACKETS = _env("RECOVERY_VALIDATION_PACKETS", 2, int)
 
 
 # --------------------------------------------------------------------------

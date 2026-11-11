@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 log = logging.getLogger("healnet.storage")
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -68,7 +68,8 @@ CREATE INDEX IF NOT EXISTS idx_anomalies_node_ts ON anomalies(node_id, ts);
 CREATE TABLE IF NOT EXISTS route_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL, node_id INTEGER NOT NULL,
-    via INTEGER, hops INTEGER, state TEXT
+    via INTEGER, hops INTEGER, state TEXT,
+    forwarded_by TEXT, detail TEXT
 );
 
 CREATE TABLE IF NOT EXISTS system_events (
@@ -83,7 +84,8 @@ CREATE INDEX IF NOT EXISTS idx_sys_events_ts ON system_events(ts DESC);
 CREATE TABLE IF NOT EXISTS recovery_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL, node_id INTEGER,
-    method TEXT, trigger_type TEXT, attempt INTEGER, result TEXT, duration_s REAL, detail TEXT
+    method TEXT, trigger_type TEXT, attempt INTEGER, result TEXT, duration_s REAL, detail TEXT,
+    start_ts REAL, previous_fault TEXT, prev_route TEXT, new_route TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_recovery_events_ts ON recovery_events(ts DESC);
 
@@ -140,6 +142,24 @@ class Storage:
             s_cols = {row[1] for row in self._db.execute("PRAGMA table_info(status_events)").fetchall()}
             if "seq" not in s_cols:
                 self._db.execute("ALTER TABLE status_events ADD COLUMN seq INTEGER")
+
+            # Check recovery_events table columns
+            r_cols = {row[1] for row in self._db.execute("PRAGMA table_info(recovery_events)").fetchall()}
+            if "start_ts" not in r_cols:
+                self._db.execute("ALTER TABLE recovery_events ADD COLUMN start_ts REAL")
+            if "previous_fault" not in r_cols:
+                self._db.execute("ALTER TABLE recovery_events ADD COLUMN previous_fault TEXT")
+            if "prev_route" not in r_cols:
+                self._db.execute("ALTER TABLE recovery_events ADD COLUMN prev_route TEXT")
+            if "new_route" not in r_cols:
+                self._db.execute("ALTER TABLE recovery_events ADD COLUMN new_route TEXT")
+
+            # Check route_events table columns
+            rt_cols = {row[1] for row in self._db.execute("PRAGMA table_info(route_events)").fetchall()}
+            if "forwarded_by" not in rt_cols:
+                self._db.execute("ALTER TABLE route_events ADD COLUMN forwarded_by TEXT")
+            if "detail" not in rt_cols:
+                self._db.execute("ALTER TABLE route_events ADD COLUMN detail TEXT")
 
             # Record schema version
             self._db.execute(
@@ -239,10 +259,19 @@ class Storage:
             (ts, node, feature, method, score, classification, detail),
         )
 
-    def insert_route(self, ts: float, node: int, via: Optional[int], hops: int, state: str):
+    def insert_route(
+        self,
+        ts: float,
+        node: int,
+        via: Optional[int],
+        hops: int,
+        state: str,
+        forwarded_by: Optional[str] = None,
+        detail: str = "",
+    ):
         self._exec(
-            "INSERT INTO route_events(ts,node_id,via,hops,state) VALUES(?,?,?,?,?)",
-            (ts, node, via, hops, state),
+            "INSERT INTO route_events(ts,node_id,via,hops,state,forwarded_by,detail) VALUES(?,?,?,?,?,?,?)",
+            (ts, node, via, hops, state, forwarded_by, detail),
         )
 
     def insert_system_event(self, event_type: str, detail: str = "", severity: str = "INFO"):
@@ -261,11 +290,29 @@ class Storage:
         result: str = "SUCCESS",
         duration_s: float = 0.0,
         detail: str = "",
+        start_ts: Optional[float] = None,
+        previous_fault: Optional[str] = None,
+        prev_route: Optional[str] = None,
+        new_route: Optional[str] = None,
     ):
         self._exec(
-            """INSERT INTO recovery_events(ts,node_id,method,trigger_type,attempt,result,duration_s,detail)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (ts, node_id, method, trigger_type, attempt, result, duration_s, detail),
+            """INSERT INTO recovery_events(ts,node_id,method,trigger_type,attempt,result,duration_s,detail,
+                                          start_ts,previous_fault,prev_route,new_route)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                ts,
+                node_id,
+                method,
+                trigger_type,
+                attempt,
+                result,
+                duration_s,
+                detail,
+                start_ts or ts,
+                previous_fault,
+                prev_route,
+                new_route,
+            ),
         )
 
     def save_system_metrics(self, metrics_dict: dict):

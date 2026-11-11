@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HEALNET Dashboard</title>
+<title>HEALNET — Self-Healing IoT Sensor Network</title>
 <style>
 :root{
   --bg:#f4f6f8; --card:#ffffff; --ink:#18212b; --mute:#5d6b7a; --line:#dde3ea;
@@ -21,47 +21,56 @@
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
 h1{font-size:18px;margin:0;letter-spacing:.3px}
 h1 small{font-weight:400;color:var(--mute);margin-left:8px}
 h2{font-size:13px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.8px;color:var(--mute);font-weight:600}
-main{padding:16px 20px;display:grid;gap:16px;max-width:1280px;margin:0 auto}
+main{padding:16px 20px;display:grid;gap:16px;max-width:1320px;margin:0 auto}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;background:var(--unk-bg);color:var(--unk);border:1px solid var(--line)}
 .chip::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
-.s-ONLINE,.s-online{background:var(--ok-bg);color:var(--ok)}
-.s-STALE{background:var(--warn-bg);color:var(--warn)}
-.s-OFFLINE,.s-offline{background:var(--bad-bg);color:var(--bad)}
+.s-ONLINE,.s-online,.s-AVAILABLE,.s-FRESH,.s-HEALTHY{background:var(--ok-bg);color:var(--ok)}
+.s-STALE,.s-DEGRADED,.s-FAILOVER,.s-DEGRADED-BUT-OPERATIONAL{background:var(--warn-bg);color:var(--warn)}
+.s-OFFLINE,.s-offline,.s-UNAVAILABLE,.s-INVALID,.s-MISSING{background:var(--bad-bg);color:var(--bad)}
 .s-UNKNOWN,.s-unknown{background:var(--unk-bg);color:var(--unk)}
-.s-RECOVERING{background:var(--rec-bg);color:var(--rec)}
+.s-RECOVERING,.s-RECOVERY,.s-ACTIVE{background:var(--rec-bg);color:var(--rec)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
-.kpi b{display:block;font-size:26px;line-height:1.1;font-variant-numeric:tabular-nums}
+.kpi b{display:block;font-size:24px;line-height:1.1;font-variant-numeric:tabular-nums}
 .kpi span{color:var(--mute);font-size:12px}
 .health{grid-column:span 2}
 .bar{height:8px;border-radius:4px;background:var(--unk-bg);margin-top:6px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--ok);transition:width .4s}
-.nodes{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px}
+.nodes{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
 .nhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .nhead strong{font-size:16px}
+.status-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}
+.status-box{background:var(--bg);border-radius:8px;padding:6px 8px;border:1px solid var(--line)}
+.status-box span{display:block;font-size:11px;color:var(--mute)}
+.status-box b{display:inline-block;margin-top:2px;font-size:12px}
+.route-banner{display:flex;align-items:center;justify-content:space-between;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px}
+.route-banner.failover{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+.route-banner b{font-weight:700}
 .vals{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
 .val{background:var(--bg);border-radius:8px;padding:6px 10px}
 .val b{font-size:22px;font-variant-numeric:tabular-nums}
 .val span{display:block;font-size:11px;color:var(--mute)}
 canvas{width:100%;height:70px;display:block;margin:4px 0}
-.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:2px 12px;margin-top:8px;font-size:12px;color:var(--mute)}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:3px 12px;margin-top:8px;font-size:12px;color:var(--mute)}
 .meta b{color:var(--ink);font-weight:600}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
-.log{max-height:260px;overflow:auto;font-size:12.5px}
+.log{max-height:280px;overflow:auto;font-size:12.5px}
 .row{display:grid;grid-template-columns:70px 1fr;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
 .row:last-child{border:0}
 .row time{color:var(--mute);font-variant-numeric:tabular-nums}
-.tag{display:inline-block;padding:0 7px;border-radius:5px;font-size:11px;font-weight:700;margin-right:6px}
-.t-ACTIVE{background:var(--bad-bg);color:var(--bad)} .t-CLEARED{background:var(--ok-bg);color:var(--ok)}
-.t-EVENT,.t-anom{background:var(--warn-bg);color:var(--warn)}
+.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:700;margin-right:6px}
+.t-ACTIVE,.t-FAIL{background:var(--bad-bg);color:var(--bad)}
+.t-CLEARED,.t-SUCCESS{background:var(--ok-bg);color:var(--ok)}
+.t-EVENT,.t-anom,.t-FAILOVER,.t-WARN{background:var(--warn-bg);color:var(--warn)}
+.t-RECOVERY,.t-INFO{background:var(--rec-bg);color:var(--rec)}
 .empty{color:var(--mute);padding:8px 0}
-svg text{fill:var(--ink);font-size:12px}
+svg text{fill:var(--ink);font-size:11.5px;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 .note{font-size:12px;color:var(--mute);margin-top:6px}
 .settings{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mute);flex-wrap:wrap}
 .settings input{font:inherit;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);width:190px}
@@ -72,38 +81,64 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </head>
 <body>
 <header>
-  <h1>HEALNET <small>self-healing IoT sensor network</small></h1>
+  <h1>HEALNET <small>Coordinator-Centric Self-Healing IoT Sensor Network</small></h1>
   <div class="chips">
-    <span class="chip" id="c-mqtt">Dashboard link: connecting</span>
+    <span class="chip" id="c-mqtt">Dashboard: connecting</span>
     <span class="chip" id="c-backend">Backend: ?</span>
     <span class="chip" id="c-bridge">Bridge: ?</span>
     <span class="chip" id="c-coord">Coordinator: ?</span>
   </div>
   <div class="settings">
-    Broker (WebSocket) <input id="in-ws"> API <input id="in-api"> <button id="apply">Apply</button>
+    Broker (WS) <input id="in-ws"> API <input id="in-api"> <button id="apply">Apply</button>
   </div>
 </header>
 
 <main>
+  <!-- KPI Overview -->
   <section class="kpis" id="kpis"></section>
 
+  <!-- Node Status Cards (Separated Node Availability, Sensor Availability, Route) -->
   <section class="nodes" id="nodes"></section>
 
-  <section class="two">
-    <div class="card"><h2>Routing</h2><div id="route"></div>
-      <div class="note">Shows what the coordinator reports. Real multi-hop forwarding is not in the firmware yet, so the path will stay direct.</div></div>
-    <div class="card"><h2>Active faults</h2><div id="active" class="log"></div></div>
+  <!-- Hardware Routing & Failover Topology Visualization -->
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <h2>Hardware Topology &amp; Failover Architecture (CD4053 MUX)</h2>
+      <span class="chip" id="net-badge">NETWORK: INITIALIZING</span>
+    </div>
+    <div id="route" style="overflow-x:auto"></div>
+    <div class="note">
+      <b>Coordinator-Centric Architecture:</b> Sensor nodes communicate wirelessly via ESP-NOW. When Node 1 ESP32 fails, Node 2 accesses Node 1's physical sensors through the CD4053 multiplexer and forwards their readings via ESP-NOW to the Coordinator. The Coordinator on USB serial is the sole input to the backend.
+    </div>
   </section>
 
+  <!-- Active Faults & Event Timeline -->
   <section class="two">
-    <div class="card"><h2>Fault &amp; event log</h2><div id="faultlog" class="log"></div></div>
-    <div class="card"><h2>Sensor anomalies <span style="text-transform:none;letter-spacing:0">(behaviour only, not hardware failure)</span></h2><div id="anomlog" class="log"></div></div>
+    <div class="card">
+      <h2>Active Faults</h2>
+      <div id="active" class="log"></div>
+    </div>
+    <div class="card">
+      <h2>Event Timeline (Chronological Log)</h2>
+      <div id="timeline" class="log"></div>
+    </div>
+  </section>
+
+  <!-- Faults, Sensor Anomalies, and Recovery Log -->
+  <section class="two">
+    <div class="card">
+      <h2>Fault &amp; State Transition Log</h2>
+      <div id="faultlog" class="log"></div>
+    </div>
+    <div class="card">
+      <h2>Sensor Anomalies <span style="text-transform:none;letter-spacing:0">(ML &amp; Statistical Behavior)</span></h2>
+      <div id="anomlog" class="log"></div>
+    </div>
   </section>
 
   <section class="card">
-    <h2>Recovery</h2>
-    <div id="reclog" class="log"><div class="empty">No recovery events yet. Recovery events from the coordinator's buttons appear here. Automatic software and relay recovery are not built yet.</div></div>
-    <div style="margin-top:8px"><button disabled>Software recovery (not available)</button> <button disabled>Hardware recovery (not available)</button></div>
+    <h2>Hardware &amp; Recovery Event Verification</h2>
+    <div id="reclog" class="log"><div class="empty">No recovery events recorded yet. Automatic recovery verification requires direct packets from the recovered node.</div></div>
   </section>
 </main>
 
@@ -134,12 +169,14 @@ let summary = null;
 const faultLog = [];       // newest first
 const anomLog = [];
 const recLog = [];
+const timelineLog = [];
 const faultDetail = {};    // "node:code" -> last ACTIVE message
 let dirty = true;
 
 function chip(id, label, status){
   const el = $(id);
-  el.className = "chip s-" + status;
+  if(!el) return;
+  el.className = "chip s-" + (status||"UNKNOWN").toUpperCase().replace(/\s+/g,"-");
   el.textContent = label + ": " + status;
 }
 function pushLog(arr, item, max=100){ arr.unshift(item); if(arr.length > max) arr.pop(); }
@@ -147,11 +184,47 @@ function pushLog(arr, item, max=100){ arr.unshift(item); if(arr.length > max) ar
 /* ---------------- node cards ---------------- */
 function ensureNode(id){
   if(nodes[id]) return nodes[id];
-  const n = nodes[id] = { id, status:"UNKNOWN", series:[], rcv:0, st:null, last:null, route:{via:null,hops:0} };
+  const n = nodes[id] = {
+    id,
+    status: "UNKNOWN",
+    esp32_status: "UNKNOWN",
+    sensor_status: "UNAVAILABLE",
+    data_status: "MISSING",
+    route_status: "DIRECT",
+    route_description: "DIRECT",
+    failover_state: "NORMAL",
+    series: [],
+    rcv: 0,
+    st: null,
+    last: null,
+    last_valid: null,
+    route: {via: null, hops: 0}
+  };
   const el = document.createElement("div");
   el.className = "card";
   el.innerHTML = `
-    <div class="nhead"><strong>Sensor Node ${id}</strong><span class="chip" data-f="badge">UNKNOWN</span></div>
+    <div class="nhead">
+      <strong>Sensor Node ${id}</strong>
+      <span class="chip" data-f="esp32-badge">ESP32: UNKNOWN</span>
+    </div>
+    <div class="status-grid">
+      <div class="status-box">
+        <span>ESP32 Hardware</span>
+        <b data-f="esp32-text" class="tag">UNKNOWN</b>
+      </div>
+      <div class="status-box">
+        <span>Physical Sensors</span>
+        <b data-f="sensor-text" class="tag">UNKNOWN</b>
+      </div>
+      <div class="status-box">
+        <span>Data Freshness</span>
+        <b data-f="data-text" class="tag">MISSING</b>
+      </div>
+    </div>
+    <div class="route-banner" data-f="route-banner">
+      <span>Communication Route:</span>
+      <b data-f="route-text">DIRECT</b>
+    </div>
     <div class="vals">
       <div class="val"><b data-f="temp">–</b><span>Temperature °C</span></div>
       <div class="val"><b data-f="hum">–</b><span>Humidity %</span></div>
@@ -175,10 +248,10 @@ function drawChart(canvas, pts, color, unit, dp){
   const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0,0,w,h);
   const css = getComputedStyle(document.documentElement);
   const mute = css.getPropertyValue("--mute").trim(), line = css.getPropertyValue("--line").trim();
-  const data = pts.filter(p => p.y !== null && p.y !== undefined);
+  const data = pts.filter(p => p.y !== null && p.y !== undefined && !Number.isNaN(p.y));
   g.font = "11px system-ui"; g.fillStyle = mute; g.strokeStyle = line; g.lineWidth = 1;
   g.beginPath(); g.moveTo(0, h-0.5); g.lineTo(w, h-0.5); g.stroke();
-  if(data.length < 2){ g.fillText("waiting for data…", 6, h/2); return; }
+  if(data.length < 2){ g.fillText("waiting for sensor data…", 6, h/2); return; }
   let lo = Math.min(...data.map(p=>p.y)), hi = Math.max(...data.map(p=>p.y));
   if(hi - lo < 1e-9){ lo -= 1; hi += 1; }
   const pad = (hi-lo)*0.15; lo -= pad; hi += pad;
@@ -195,32 +268,64 @@ function drawChart(canvas, pts, color, unit, dp){
 
 function renderNode(n){
   const s = n.st || {};
-  const status = n.status;
-  const badge = n.f("badge");
-  badge.className = "chip s-" + status; badge.textContent = status;
-  const L = n.last || (s.last) || {};
+  const esp32 = n.esp32_status || s.esp32_status || n.status || "UNKNOWN";
+  const sensor = n.sensor_status || s.sensor_status || "AVAILABLE";
+  const data = n.data_status || s.data_status || "FRESH";
+  const route = n.route_status || s.route_status || (s.route && s.route.via ? "FAILOVER" : "DIRECT");
+  const routeDesc = n.route_description || s.route_description || (route === "FAILOVER" ? `FAILOVER VIA NODE ${s.route?.via || 2}` : "DIRECT");
+
+  const badge = n.f("esp32-badge");
+  badge.className = "chip s-" + esp32.toUpperCase();
+  badge.textContent = "ESP32: " + esp32;
+
+  const esp32Box = n.f("esp32-text");
+  esp32Box.className = "tag s-" + esp32.toUpperCase();
+  esp32Box.textContent = esp32;
+
+  const sensorBox = n.f("sensor-text");
+  sensorBox.className = "tag s-" + sensor.toUpperCase();
+  sensorBox.textContent = sensor;
+
+  const dataBox = n.f("data-text");
+  dataBox.className = "tag s-" + data.toUpperCase();
+  dataBox.textContent = data;
+
+  const routeBanner = n.f("route-banner");
+  if(route === "FAILOVER"){
+    routeBanner.className = "route-banner failover";
+    n.f("route-text").textContent = "⚡ " + routeDesc;
+  } else {
+    routeBanner.className = "route-banner";
+    n.f("route-text").textContent = "DIRECT";
+  }
+
+  const L = n.last || (s.last) || (s.last_valid) || {};
   n.f("temp").textContent  = fmt(L.temp);
   n.f("hum").textContent   = fmt(L.hum);
   n.f("light").textContent = L.light == null ? "–" : Math.round(L.light);
-  drawChart(n.c("temp"),  n.series.map(p=>({x:p.ts,y:p.temp})),  getComputedStyle(document.documentElement).getPropertyValue("--c-temp").trim(),  "°", 1);
+
+  drawChart(n.c("temp"),  n.series.map(p=>({x:p.ts,y:p.temp})),  getComputedStyle(document.documentElement).getPropertyValue("--c-temp").trim(),  "°C", 1);
   drawChart(n.c("hum"),   n.series.map(p=>({x:p.ts,y:p.hum})),   getComputedStyle(document.documentElement).getPropertyValue("--c-hum").trim(),   "%", 1);
   drawChart(n.c("light"), n.series.map(p=>({x:p.ts,y:p.light})), getComputedStyle(document.documentElement).getPropertyValue("--c-light").trim(), "",  0);
 
   let age = null;
   if(s.age_s != null) age = s.age_s + (Date.now()-n.rcv)/1000;
+  let dirAge = s.direct_age_s != null ? s.direct_age_s + (Date.now()-n.rcv)/1000 : null;
+
   const sens = s.sensors && typeof s.sensors === "object"
       ? Object.entries(s.sensors).map(([k,v])=>`${esc(k)}: ${esc(typeof v==="object"?JSON.stringify(v):v)}`).join(", ") : "–";
-  const route = s.route ? (s.route.via == null && !s.route.hops ? "direct" : `via node ${esc(s.route.via)} (${esc(s.route.hops)} hop)`) : "–";
+
   n.f("meta").innerHTML = [
     ["Last seq", s.last_seq ?? "–"],
-    ["Last packet", age == null ? "–" : age.toFixed(0) + " s ago"],
+    ["Last data received", age == null ? "–" : age.toFixed(0) + " s ago"],
+    ["Direct packet age", dirAge == null ? "–" : dirAge.toFixed(0) + " s ago"],
     ["RSSI", s.rssi == null ? "n/a" : s.rssi + " dBm"],
     ["Packets / lost", `${s.packets ?? 0} / ${s.lost ?? 0} (${fmt(s.loss_pct)}%)`],
-    ["Duplicates / out-of-order", `${s.duplicates ?? 0} / ${s.out_of_order ?? 0}`],
-    ["Reboots", s.reboots ?? 0],
-    ["Route", route],
+    ["Failover state", esc(n.failover_state || s.failover_state || "NORMAL")],
+    ["Forwarded by", esc(s.forwarded_by || (s.route && s.route.forwarded_by) || (route==="FAILOVER" ? "Node "+(s.route?.via||2) : "None"))],
     ["Sensors", sens],
   ].map(([k,v])=>`<div>${k}: <b>${v}</b></div>`).join("");
+
   const codes = s.active_faults || [];
   n.f("faults").innerHTML = codes.length ? codes.map(c=>`<span class="fault-pill">FAULT ${esc(c)}</span>`).join("") : "";
 }
@@ -228,77 +333,192 @@ function renderNode(n){
 /* ---------------- panels ---------------- */
 function renderKpis(){
   const s = summary || {};
+  const anyFailover = s.failover_active || Object.values(nodes).some(n => n.route_status === "FAILOVER");
+  const netStatus = s.network_status || (anyFailover ? "DEGRADED BUT OPERATIONAL" : (s.offline ? "DEGRADED" : "HEALTHY"));
+
   const items = [
-    ["Total nodes", s.total_nodes], ["Online", s.online], ["Stale", s.stale], ["Offline", s.offline],
-    ["Unknown", s.unknown], ["Recovering", s.recovering], ["Active faults", s.active_fault_count],
+    ["Coordinator", esc((s.coordinator||"UNKNOWN").toUpperCase())],
+    ["Network Status", esc(netStatus)],
+    ["Active Faults", s.active_fault_count ?? 0],
+    ["Recovery Status", esc(s.recovery_status || (s.recovering ? "ACTIVE" : "IDLE"))],
+    ["Online Nodes", s.online ?? 0],
+    ["Failover Route", anyFailover ? "ACTIVE (via CD4053)" : "DIRECT"],
   ];
   const h = s.network_health_pct;
-  $("kpis").innerHTML = items.map(([k,v])=>`<div class="kpi"><b>${v ?? "–"}</b><span>${k}</span></div>`).join("")
-    + `<div class="kpi health"><b>${h == null ? "–" : h.toFixed(0) + "%"}</b><span>Network health</span><div class="bar"><i style="width:${h||0}%"></i></div></div>`;
+  $("kpis").innerHTML = items.map(([k,v])=>{
+    const cls = v.includes("DEGRADED BUT OPERATIONAL") ? "s-FAILOVER tag" : (v==="HEALTHY"||v==="ONLINE"?"s-ONLINE tag":(v==="OFFLINE"?"s-OFFLINE tag":""));
+    return `<div class="kpi"><b><span class="${cls}">${v}</span></b><span>${k}</span></div>`;
+  }).join("")
+    + `<div class="kpi health"><b>${h == null ? "–" : h.toFixed(0) + "%"}</b><span>Network Health Index</span><div class="bar"><i style="width:${h||0}%"></i></div></div>`;
+
+  const netBadge = $("net-badge");
+  if(netBadge){
+    netBadge.className = "chip s-" + netStatus.toUpperCase().replace(/\s+/g,"-");
+    netBadge.textContent = "NETWORK: " + netStatus;
+  }
 }
 
 function renderRoute(){
-  const ids = Object.keys(nodes).map(Number).sort();
-  if(!ids.length){ $("route").innerHTML = '<div class="empty">No nodes seen yet.</div>'; return; }
-  const W = 520, H = 70 + ids.length*90;
-  const cx = 420, cy = H/2, bx = 500;
-  const pos = {}; ids.forEach((id,i)=> pos[id] = {x:70, y:50 + i*90});
-  const col = n => n.status==="ONLINE" ? "var(--ok)" : n.status==="STALE" ? "var(--warn)" : n.status==="OFFLINE" ? "var(--bad)" : "var(--unk)";
-  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Network routes">`;
-  ids.forEach(id=>{
-    const n = nodes[id], p = pos[id], r = n.st && n.st.route;
-    const via = r && r.via != null ? r.via : null;
-    const dash = n.status==="OFFLINE" || n.status==="UNKNOWN" ? ' stroke-dasharray="6 5"' : "";
-    if(via != null && pos[via]){
-      const v = pos[via];
-      svg += `<path d="M${p.x+30} ${p.y} L${v.x+30} ${v.y-14} L${cx-34} ${cy}" fill="none" stroke="var(--warn)" stroke-width="2.5"/>`;
-    } else {
-      svg += `<path d="M${p.x+30} ${p.y} L${cx-34} ${cy}" fill="none" stroke="${col(n)}" stroke-width="2.5"${dash}/>`;
-    }
-  });
-  const cOnline = summary && summary.coordinator;
-  const ccol = cOnline==="online" ? "var(--ok)" : cOnline==="offline" ? "var(--bad)" : "var(--unk)";
-  svg += `<line x1="${cx+34}" y1="${cy}" x2="${bx-12}" y2="${cy}" stroke="${ccol}" stroke-width="2.5"/>`;
-  ids.forEach(id=>{
-    const n = nodes[id], p = pos[id];
-    svg += `<circle cx="${p.x}" cy="${p.y}" r="30" fill="var(--card)" stroke="${col(n)}" stroke-width="3"/>
-            <text x="${p.x}" y="${p.y-2}" text-anchor="middle" font-weight="700">Node ${id}</text>
-            <text x="${p.x}" y="${p.y+13}" text-anchor="middle">${esc(n.status)}</text>`;
-  });
-  svg += `<rect x="${cx-34}" y="${cy-26}" width="68" height="52" rx="10" fill="var(--card)" stroke="${ccol}" stroke-width="3"/>
-          <text x="${cx}" y="${cy-3}" text-anchor="middle" font-weight="700">Coord.</text>
-          <text x="${cx}" y="${cy+13}" text-anchor="middle">${esc(cOnline||"?")}</text>
-          <text x="${bx-4}" y="${cy+4}" text-anchor="middle">MQTT</text></svg>`;
+  const ids = [1, 2];
+  const W = 720, H = 260;
+  const col = n => {
+    const st = n ? (n.esp32_status || n.status) : "UNKNOWN";
+    return st==="ONLINE" ? "var(--ok)" : st==="STALE" ? "var(--warn)" : st==="OFFLINE" ? "var(--bad)" : "var(--unk)";
+  };
+
+  const n1 = nodes[1] || {status:"UNKNOWN", route_status:"DIRECT"};
+  const n2 = nodes[2] || {status:"UNKNOWN", route_status:"DIRECT"};
+  const n1Failover = n1.route_status === "FAILOVER" || (n1.st && n1.st.route && n1.st.route.via === 2);
+  const n1Esp32Off = n1.esp32_status === "OFFLINE" || n1.status === "OFFLINE";
+  const cOnline = (summary && summary.coordinator) || "online";
+  const ccol = cOnline==="online" ? "var(--ok)" : "var(--bad)";
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="260" role="img" aria-label="HEALNET Architecture">
+    <defs>
+      <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="var(--ok)"/>
+      </marker>
+      <marker id="arrow-amber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="var(--warn)"/>
+      </marker>
+      <marker id="arrow-line" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="var(--line)"/>
+      </marker>
+    </defs>`;
+
+  // 1. Node 1 Physical Sensors
+  svg += `<rect x="20" y="30" width="120" height="44" rx="8" fill="var(--card)" stroke="var(--line)" stroke-width="2"/>
+          <text x="80" y="48" text-anchor="middle" font-weight="700">Node 1 Sensors</text>
+          <text x="80" y="63" text-anchor="middle" fill="var(--mute)">(DHT11 + LDR)</text>`;
+
+  // 2. Node 1 ESP32
+  const n1Color = col(n1);
+  const n1Dash = n1Esp32Off ? ' stroke-dasharray="5 4"' : '';
+  svg += `<rect x="180" y="30" width="120" height="44" rx="8" fill="var(--card)" stroke="${n1Color}" stroke-width="2.5"${n1Dash}/>
+          <text x="240" y="48" text-anchor="middle" font-weight="700">Node 1 ESP32</text>
+          <text x="240" y="63" text-anchor="middle" fill="${n1Color}">${esc(n1.esp32_status||n1.status||"ONLINE")}</text>`;
+
+  // Arrow Node 1 Sensors -> Node 1 ESP32
+  if(!n1Failover && !n1Esp32Off){
+    svg += `<line x1="140" y1="52" x2="174" y2="52" stroke="var(--ok)" stroke-width="2.5" marker-end="url(#arrow-green)"/>`;
+  } else {
+    svg += `<line x1="140" y1="52" x2="174" y2="52" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+  }
+
+  // 3. CD4053 Multiplexer (Failover Bridge)
+  const muxColor = n1Failover ? "var(--warn)" : "var(--line)";
+  const muxBg = n1Failover ? "var(--warn-bg)" : "var(--card)";
+  svg += `<rect x="80" y="105" width="140" height="48" rx="8" fill="${muxBg}" stroke="${muxColor}" stroke-width="2.5"/>
+          <text x="150" y="125" text-anchor="middle" font-weight="700" fill="${n1Failover?'var(--warn)':'var(--ink)'}">CD4053 MUX</text>
+          <text x="150" y="141" text-anchor="middle" fill="var(--mute)">${n1Failover ? '⚡ FAILOVER ACTIVE' : 'Standby Bypass'}</text>`;
+
+  // Failover paths through CD4053
+  if(n1Failover){
+    // Node 1 Sensors -> CD4053
+    svg += `<path d="M 80 74 L 80 92 L 130 92 L 130 102" fill="none" stroke="var(--warn)" stroke-width="2.5" marker-end="url(#arrow-amber)"/>`;
+    // CD4053 -> Node 2 ESP32
+    svg += `<path d="M 170 153 L 170 185 L 205 185 L 205 194" fill="none" stroke="var(--warn)" stroke-width="2.5" marker-end="url(#arrow-amber)"/>`;
+    svg += `<text x="95" y="172" fill="var(--warn)" font-size="10" font-weight="600">Failover Bus</text>`;
+  } else {
+    svg += `<path d="M 80 74 L 80 102" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+    svg += `<path d="M 170 153 L 170 194" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+  }
+
+  // 4. Node 2 Physical Sensors & ESP32
+  svg += `<rect x="20" y="196" width="120" height="44" rx="8" fill="var(--card)" stroke="var(--line)" stroke-width="2"/>
+          <text x="80" y="214" text-anchor="middle" font-weight="700">Node 2 Sensors</text>
+          <text x="80" y="229" text-anchor="middle" fill="var(--mute)">(DHT11 + LDR)</text>`;
+
+  const n2Color = col(n2);
+  svg += `<rect x="180" y="196" width="120" height="44" rx="8" fill="var(--card)" stroke="${n2Color}" stroke-width="2.5"/>
+          <text x="240" y="214" text-anchor="middle" font-weight="700">Node 2 ESP32</text>
+          <text x="240" y="229" text-anchor="middle" fill="${n2Color}">${esc(n2.esp32_status||n2.status||"ONLINE")}</text>`;
+
+  // Node 2 Sensors -> Node 2 ESP32
+  svg += `<line x1="140" y1="218" x2="174" y2="218" stroke="var(--ok)" stroke-width="2.5" marker-end="url(#arrow-green)"/>`;
+
+  // 5. Coordinator ESP32
+  svg += `<rect x="390" y="98" width="130" height="64" rx="10" fill="var(--card)" stroke="${ccol}" stroke-width="3"/>
+          <text x="455" y="124" text-anchor="middle" font-weight="700" font-size="13">Coordinator</text>
+          <text x="455" y="140" text-anchor="middle" fill="${ccol}">ESP32 (${esc(cOnline.toUpperCase())})</text>
+          <text x="455" y="154" text-anchor="middle" fill="var(--mute)" font-size="10">ESP-NOW Gateway</text>`;
+
+  // Wireless links to Coordinator
+  if(!n1Esp32Off && !n1Failover){
+    svg += `<path d="M 300 52 L 350 52 L 384 112" fill="none" stroke="var(--ok)" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+            <text x="345" y="72" fill="var(--ok)" font-size="10">ESP-NOW</text>`;
+  } else {
+    svg += `<path d="M 300 52 L 350 52 L 384 112" fill="none" stroke="var(--bad)" stroke-width="1.5" stroke-dasharray="5 4"/>
+            <text x="345" y="72" fill="var(--bad)" font-size="10">Offline / Cut</text>`;
+  }
+
+  // Node 2 -> Coordinator
+  const n2FwdLabel = n1Failover ? "ESP-NOW (N2 + N1 Sensors)" : "ESP-NOW (Direct)";
+  const n2LinkColor = n1Failover ? "var(--warn)" : "var(--ok)";
+  const n2Arrow = n1Failover ? "url(#arrow-amber)" : "url(#arrow-green)";
+  svg += `<path d="M 300 218 L 350 218 L 384 148" fill="none" stroke="${n2LinkColor}" stroke-width="2.5" marker-end="${n2Arrow}"/>
+          <text x="315" y="195" fill="${n2LinkColor}" font-size="10">${n2FwdLabel}</text>`;
+
+  // 6. USB Serial connection to Laptop / Python Backend
+  svg += `<line x1="520" y1="130" x2="575" y2="130" stroke="var(--rec)" stroke-width="3"/>
+          <text x="548" y="122" text-anchor="middle" fill="var(--rec)" font-size="10" font-weight="700">USB Serial</text>`;
+
+  svg += `<rect x="580" y="98" width="125" height="64" rx="10" fill="var(--card)" stroke="var(--rec)" stroke-width="2.5"/>
+          <text x="642" y="124" text-anchor="middle" font-weight="700">Python Backend</text>
+          <text x="642" y="139" text-anchor="middle" fill="var(--mute)">serial_bridge.py</text>
+          <text x="642" y="152" text-anchor="middle" fill="var(--mute)" font-size="10">MQTT → SQLite → API</text>`;
+
+  svg += `</svg>`;
   $("route").innerHTML = svg;
 }
 
 function renderActive(){
   const list = (summary && summary.active_faults) || [];
-  if(!list.length){ $("active").innerHTML = '<div class="empty">No active faults.</div>'; return; }
+  if(!list.length){ $("active").innerHTML = '<div class="empty">No active faults. All nodes healthy.</div>'; return; }
   $("active").innerHTML = list.map(f=>{
     const d = faultDetail[`${f.node}:${f.fault_code}`] || {};
     return `<div class="row"><time>${fmtTime(f.since)}</time><div><span class="tag t-ACTIVE">FAULT ${esc(f.fault_code)}</span><b>${esc(f.fault)}</b>
-      ${f.node ? " · node " + esc(f.node) : " · system"} ${d.severity ? " · " + esc(d.severity) : ""}
+      ${f.node ? " · Node " + esc(f.node) : " · System"} ${d.severity ? " · " + esc(d.severity) : ""}
       <div style="color:var(--mute)">${esc(d.detail || "")}</div></div></div>`;
   }).join("");
 }
 
+function pushTimelineEvent(ev){
+  pushLog(timelineLog, ev, 150);
+}
+
 function renderLogs(){
+  // Timeline log
+  $("timeline").innerHTML = timelineLog.length ? timelineLog.map(t=>{
+    const tagCls = t.tag === "FAILOVER" ? "t-FAILOVER" : (t.tag==="RECOVERY" ? "t-RECOVERY" : (t.tag==="FAULT" ? "t-ACTIVE" : "t-INFO"));
+    return `<div class="row"><time>${fmtTime(t.ts)}</time><div><span class="tag ${tagCls}">${esc(t.tag||"EVENT")}</span><b>${esc(t.title)}</b>
+      <div style="color:var(--mute)">${esc(t.detail||"")}</div></div></div>`;
+  }).join("") : '<div class="empty">No timeline events recorded yet.</div>';
+
+  // Fault log
   $("faultlog").innerHTML = faultLog.length ? faultLog.map(f=>{
     const state = f.state || "EVENT";
     const name = f.fault || f.event || "EVENT";
     const extra = f.event === "PACKET_LOSS" ? ` ${esc(f.missing)} packets missing (seq ${esc(f.from_seq)}–${esc(f.to_seq)})` : esc(f.detail || "");
     return `<div class="row"><time>${fmtTime(f.ts)}</time><div><span class="tag t-${esc(state)}">${esc(state)}</span><b>${esc(name)}</b>
-      ${f.node ? " · node " + esc(f.node) : ""}<div style="color:var(--mute)">${extra}${f.duration_s ? " · lasted " + esc(f.duration_s) + " s" : ""}</div></div></div>`;
+      ${f.node ? " · Node " + esc(f.node) : ""}<div style="color:var(--mute)">${extra}${f.duration_s ? " · lasted " + esc(f.duration_s) + " s" : ""}</div></div></div>`;
   }).join("") : '<div class="empty">No fault events yet.</div>';
 
+  // Anomalies
   $("anomlog").innerHTML = anomLog.length ? anomLog.map(a=>`
     <div class="row"><time>${fmtTime(a.ts)}</time><div><span class="tag t-anom">${esc(a.classification || "anomaly")}</span>
-    node ${esc(a.node)} · ${esc(a.feature)} · ${esc(a.method)} · score ${fmt(a.score,2)}
+    Node ${esc(a.node)} · ${esc(a.feature)} · ${esc(a.method)} · score ${fmt(a.score,2)}
     <div style="color:var(--mute)">${esc(a.detail || "")}</div></div></div>`).join("")
-    : '<div class="empty">No anomalies detected.</div>';
+    : '<div class="empty">No environmental or sensor anomalies detected.</div>';
 
-  if(recLog.length) $("reclog").innerHTML = recLog.map(r=>`<div class="row"><time>${fmtTime(r.ts)}</time><div><span class="tag t-${r.result==="SUCCESS"?"CLEARED":"ACTIVE"}">${esc(r.result||"EVENT")}</span><b>${esc(r.method||"recovery")}</b>${r.node?" · node "+esc(r.node):""}<div style="color:var(--mute)">${esc(r.detail||r.event||"")}</div></div></div>`).join("");
+  // Recovery Log
+  if(recLog.length){
+    $("reclog").innerHTML = recLog.map(r=>{
+      const isSuccess = r.result === "SUCCESS";
+      const routeInfo = r.previous_route && r.new_route ? ` (${r.previous_route} → ${r.new_route})` : "";
+      return `<div class="row"><time>${fmtTime(r.ts)}</time><div><span class="tag t-${isSuccess?"CLEARED":"ACTIVE"}">${esc(r.result||"CONFIRMED")}</span><b>${esc(r.method||r.event||"Recovery")}</b>${r.node?" · Node "+esc(r.node):""}${routeInfo}<div style="color:var(--mute)">${esc(r.detail||r.message||"")}${r.duration_s?" · verified in "+esc(r.duration_s)+"s":""}</div></div></div>`;
+    }).join("");
+  }
 }
 
 function renderAll(){
@@ -306,8 +526,8 @@ function renderAll(){
   renderKpis(); renderRoute(); renderActive(); renderLogs();
   dirty = false;
 }
-setInterval(()=>{ if(dirty) renderAll(); }, 400);
-setInterval(()=>{ Object.values(nodes).forEach(renderNode); }, 2000);   // ages tick
+setInterval(()=>{ if(dirty) renderAll(); }, 350);
+setInterval(()=>{ Object.values(nodes).forEach(renderNode); }, 1500);
 window.addEventListener("resize", ()=>{ dirty = true; });
 
 /* ---------------- incoming MQTT ---------------- */
@@ -320,26 +540,82 @@ function onMsg(topic, raw){
     n.series.push({ts:m.ts || Date.now()/1000, temp:m.temp, hum:m.hum, light:m.light});
     if(n.series.length > MAXPTS) n.series.shift();
     if(m.status) n.status = m.status;
+    if(m.esp32_status) n.esp32_status = m.esp32_status;
+    if(m.sensor_status) n.sensor_status = m.sensor_status;
+    if(m.data_status) n.data_status = m.data_status;
+    if(m.route_status) n.route_status = m.route_status;
+    if(m.route_description) n.route_description = m.route_description;
+    if(m.failover_state) n.failover_state = m.failover_state;
   } else if((r = topic.match(/^healnet\/node(\d+)\/status$/))){
     const n = ensureNode(+r[1]);
-    n.st = m; n.status = m.status || n.status; n.rcv = Date.now();
+    n.st = m;
+    n.status = m.status || n.status;
+    n.esp32_status = m.esp32_status || n.esp32_status;
+    n.sensor_status = m.sensor_status || n.sensor_status;
+    n.data_status = m.data_status || n.data_status;
+    n.route_status = m.route_status || n.route_status;
+    n.route_description = m.route_description || n.route_description;
+    n.failover_state = m.failover_state || n.failover_state;
+    n.rcv = Date.now();
     if(m.last && m.last.temp != null) n.last = m.last;
+    if(m.last_valid && m.last_valid.temp != null) n.last_valid = m.last_valid;
   } else if(topic === "healnet/system/summary"){
     summary = m;
+    if(m.nodes){
+      Object.entries(m.nodes).forEach(([k,v])=>{
+        const nid = +k.replace("node","");
+        const n = ensureNode(nid);
+        if(v.esp32_status) n.esp32_status = v.esp32_status;
+        if(v.sensor_status) n.sensor_status = v.sensor_status;
+        if(v.data_status) n.data_status = v.data_status;
+        if(v.route_status) n.route_status = v.route_status;
+        if(v.failover_state) n.failover_state = v.failover_state;
+      });
+    }
     (m.active_faults||[]).forEach(f=> ensureNode && f.node && ensureNode(f.node));
   } else if(topic === "healnet/system/fault"){
     if(m.state === "ACTIVE") faultDetail[`${m.node}:${m.fault_code}`] = m;
     pushLog(faultLog, m);
-  } else if(topic === "healnet/system/anomaly"){
-    pushLog(anomLog, m);
+    pushTimelineEvent({
+      ts: m.ts || Date.now()/1000,
+      tag: "FAULT",
+      title: `${m.fault || m.event} ${m.state||""} (Node ${m.node||"Sys"})`,
+      detail: m.detail || ""
+    });
+  } else if(topic === "healnet/system/routing"){
+    pushTimelineEvent({
+      ts: m.ts || Date.now()/1000,
+      tag: m.state === "FAILOVER" ? "FAILOVER" : "ROUTE",
+      title: `Node ${m.node} Route: ${m.state} (via=${m.via}, hops=${m.hops})`,
+      detail: m.state === "FAILOVER" ? `Node ${m.node} physical sensors routed through Node ${m.via} via CD4053` : "Direct wireless communication active"
+    });
+    if(nodes[m.node]){
+      nodes[m.node].route_status = m.state;
+      nodes[m.node].route = {via: m.via, hops: m.hops};
+    }
   } else if(topic === "healnet/system/recovery"){
     pushLog(recLog, m);
+    pushTimelineEvent({
+      ts: m.ts || Date.now()/1000,
+      tag: "RECOVERY",
+      title: `Node ${m.node} Recovery ${m.result||"CONFIRMED"}`,
+      detail: m.detail || `${m.previous_route||""} → ${m.new_route||"DIRECT"}`
+    });
+  } else if(topic === "healnet/system/anomaly"){
+    pushLog(anomLog, m);
   } else if(topic === "healnet/system/backend"){
     chip("c-backend", "Backend", (m.status||"unknown").toLowerCase());
   } else if(topic === "healnet/system/bridge"){
     chip("c-bridge", "Bridge", (m.status||"unknown").toLowerCase());
   } else if(topic === "healnet/system/coordinator"){
     chip("c-coord", "Coordinator", (m.status||"unknown").toLowerCase());
+  } else if(topic === "healnet/system/coordinator_event"){
+    pushTimelineEvent({
+      ts: m.rx_ts || m.ts || Date.now()/1000,
+      tag: "EVENT",
+      title: `Coordinator: ${m.event || "Event"}`,
+      detail: m.detail || m.message || ""
+    });
   }
   dirty = true;
 }
@@ -351,20 +627,84 @@ async function api(path){
 }
 async function backfill(){
   try{
+    // 1. Fetch node status snapshots
+    const nodesData = await api("/api/nodes");
+    if(Array.isArray(nodesData)){
+      nodesData.forEach(nd=>{
+        const n = ensureNode(nd.node_id);
+        n.status = nd.status;
+        n.esp32_status = nd.esp32_status || nd.status;
+        n.sensor_status = nd.sensor_status || "AVAILABLE";
+        n.data_status = nd.data_status || "FRESH";
+        n.route_status = nd.route_status || "DIRECT";
+        n.route_description = nd.route_description || "DIRECT";
+        n.failover_state = nd.failover_state || "NORMAL";
+        if(nd.last_reading) n.last = nd.last_reading;
+        if(nd.last_valid_reading) n.last_valid = nd.last_valid_reading;
+      });
+    }
+
+    // 2. Fetch sensor history
     for(const id of [1,2]){
       const d = await api(`/api/sensors/${id}/history?limit=150`);
       const n = ensureNode(id);
-      if(!n.series.length){
+      if(!n.series.length && d.readings){
         n.series = d.readings.filter(x=>x.temp!=null||x.light!=null).map(x=>({ts:x.ts,temp:x.temp,hum:x.hum,light:x.light}));
         const l = n.series[n.series.length-1]; if(l && !n.last) n.last = {temp:l.temp,hum:l.hum,light:l.light};
       }
     }
+
+    // 3. Faults history
     const f = await api("/api/faults/history?limit=40");
-    f.faults.slice().reverse().forEach(x=> faultLog.unshift({ts:x.ts,node:x.node_id,fault_code:x.fault_code,fault:x.fault_name,
-        severity:x.severity,detail:x.detail,state:x.active?"ACTIVE":"CLEARED"}));
+    if(f.faults){
+      f.faults.slice().reverse().forEach(x=>{
+        faultLog.unshift({ts:x.ts,node:x.node_id,fault_code:x.fault_code,fault:x.fault_name,
+            severity:x.severity,detail:x.detail,state:x.active?"ACTIVE":"CLEARED"});
+        pushTimelineEvent({
+          ts: x.ts,
+          tag: "FAULT",
+          title: `FAULT ${x.fault_code} ${x.fault_name} (${x.active?"ACTIVE":"CLEARED"})`,
+          detail: x.detail || ""
+        });
+      });
+    }
+
+    // 4. Recovery events
+    const r = await api("/api/system/recovery?limit=30");
+    if(r.events){
+      r.events.slice().reverse().forEach(rx=>{
+        recLog.unshift(rx);
+        pushTimelineEvent({
+          ts: rx.ts,
+          tag: "RECOVERY",
+          title: `Recovery ${rx.result||"CONFIRMED"} Node ${rx.node_id||""}`,
+          detail: rx.detail || `${rx.prev_route||""} → ${rx.new_route||"DIRECT"}`
+        });
+      });
+    }
+
+    // 5. System events
+    const ev = await api("/api/system/events?limit=40");
+    if(ev.events){
+      ev.events.slice().reverse().forEach(e=>{
+        pushTimelineEvent({
+          ts: e.ts,
+          tag: e.event_type.includes("failover") ? "FAILOVER" : "INFO",
+          title: e.event_type.replace(/_/g," ").toUpperCase(),
+          detail: e.detail || ""
+        });
+      });
+    }
+
+    // 6. Anomalies
     const a = await api("/api/anomalies?limit=30");
-    a.anomalies.slice().reverse().forEach(x=> anomLog.unshift({ts:x.ts,node:x.node_id,feature:x.feature,method:x.method,
-        score:x.score,classification:x.classification,detail:x.detail}));
+    if(a.anomalies){
+      a.anomalies.slice().reverse().forEach(x=> anomLog.unshift({ts:x.ts,node:x.node_id,feature:x.feature,method:x.method,
+          score:x.score,classification:x.classification,detail:x.detail}));
+    }
+
+    // 7. Summary
+    summary = await api("/api/system/summary");
     dirty = true;
   }catch(e){ console.warn("API backfill skipped:", e); }
 }
@@ -388,14 +728,13 @@ backfill();
 loadMqtt(["mqtt.min.js","https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js","https://unpkg.com/mqtt@5/dist/mqtt.min.js"])
 .then(()=>{
   const c = mqtt.connect(WS_URL, {clientId:"healnet-dash-" + Math.random().toString(16).slice(2,8), reconnectPeriod:2000, clean:true});
-  c.on("connect", ()=>{ chip("c-mqtt","Dashboard link","online"); c.subscribe("healnet/#", {qos:0}); });
-  c.on("reconnect", ()=> chip("c-mqtt","Dashboard link","unknown"));
-  c.on("close", ()=> chip("c-mqtt","Dashboard link","offline"));
+  c.on("connect", ()=>{ chip("c-mqtt","Dashboard","online"); c.subscribe("healnet/#", {qos:0}); });
+  c.on("reconnect", ()=> chip("c-mqtt","Dashboard","unknown"));
+  c.on("close", ()=> chip("c-mqtt","Dashboard","offline"));
   c.on("error", e=> console.warn(e));
   c.on("message", (t,p)=> onMsg(t, p.toString()));
 }).catch(()=>{
-  chip("c-mqtt","Dashboard link","offline");
-  alert("Could not load mqtt.js. Download https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js and save it next to this file as mqtt.min.js");
+  chip("c-mqtt","Dashboard","offline");
 });
 renderAll();
 </script>

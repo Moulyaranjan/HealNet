@@ -35,9 +35,9 @@ import time
 import config
 import protocol
 
-DEMO = ("15:dht1_fail,30:dht1_ok,40:spike1,55:env_light,75:n2_off,95:n2_on,"
-        "110:dup1,112:ooo1,120:loss1_30,140:loss1_0,150:ldr2_stuck,185:ldr2_ok,"
-        "195:reboot2,210:via1_2,225:via1_direct,240:coord_off,255:coord_on")
+DEMO = ("15:dht1_fail,30:dht1_ok,40:spike1,55:env_light,75:failover1_2,105:recover1_direct,"
+        "120:dup1,122:ooo1,130:loss1_30,150:loss1_0,160:ldr2_stuck,185:ldr2_ok,"
+        "195:reboot2,210:coord_off,230:coord_on")
 
 
 class SimNode:
@@ -53,29 +53,34 @@ class SimNode:
         self.loss = 0.0
         self.via = None
         self.hops = 0
+        self.forward_for = None
         self.spike = 0
         self.last = None
         self.hold_next = False
         self.held = None
 
-    def reading(self, now, env_light_offset):
+    def reading(self, now, env_light_offset, override_node=None, via=None, hops=0, forwarded_by=None):
         t = now - self.t0
+        nid = override_node or self.id
         temp = 26.0 + 1.2 * math.sin(t / 90 + self.phase) + random.gauss(0, 0.15)
         hum = 58.0 + 3.0 * math.sin(t / 120 + self.phase * 2) + random.gauss(0, 0.5)
         light = 1800 + 250 * math.sin(t / 60 + self.phase) + random.gauss(0, 15) + env_light_offset
-        if self.spike:
+        if self.spike and override_node is None:
             temp += 14.0
             self.spike -= 1
         dht_ok = not self.dht_fail
         msg = {
-            "type": "data", "node": self.id, "seq": self.seq, "boot": self.boot,
+            "type": "data", "node": nid, "seq": self.seq, "boot": self.boot,
             "temp": round(round(temp), 1) if dht_ok else float("nan"),
             "hum": round(round(hum), 1) if dht_ok else float("nan"),
             "light": 4095 if self.ldr_stuck else int(max(0, min(4095, light))),
             "valid": dht_ok, "dht_ok": dht_ok, "ldr_ok": True,
             "rssi": random.randint(-62, -44),
             "uptime_ms": int((now - self.t0) * 1000),
-            "via": self.via, "hops": self.hops,
+            "via": via if via is not None else self.via,
+            "hops": hops if hops else self.hops,
+            "source": f"NODE{nid}",
+            "forwarded_by": forwarded_by,
             "simulated": True,
         }
         self.seq += 1
@@ -157,6 +162,26 @@ class Simulator:
             n.seq, n.boot, n.t0 = 0, n.boot + 1, time.time()
         elif base == "via":
             n.via, n.hops = (2, 1) if arg == "2" else ((1, 1) if arg == "1" else (None, 0))
+        elif cmd in ("failover1_2", "failover1"):
+            # Node 1 ESP32 fails; Node 2 accesses Node 1 sensors via CD4053 and forwards them
+            self.nodes[1].online = False
+            self.nodes[2].forward_for = 1
+            print(f"[sim] FAILOVER ACTIVATED: Node 1 ESP32 OFFLINE; Node 2 forwarding Node 1 sensors via CD4053", file=sys.stderr)
+        elif cmd in ("recover1_direct", "recover1"):
+            # Node 1 recovers and resumes direct communication
+            self.nodes[2].forward_for = None
+            self.nodes[1].online = True
+            self.nodes[1].via = None
+            self.nodes[1].hops = 0
+            print(f"[sim] RECOVERY INITIATED: Node 1 ESP32 direct communication restored", file=sys.stderr)
+        elif cmd in ("failover2_1", "failover2"):
+            self.nodes[2].online = False
+            self.nodes[1].forward_for = 2
+        elif cmd in ("recover2_direct", "recover2"):
+            self.nodes[1].forward_for = None
+            self.nodes[2].online = True
+            self.nodes[2].via = None
+            self.nodes[2].hops = 0
         elif base == "rec":
             n.online = True
             self.emit({
@@ -190,19 +215,31 @@ class Simulator:
             if self.coord_up:
                 env = -700.0 if now < self.env_until else 0.0
                 for n in self.nodes.values():
-                    if not n.online:
-                        continue
-                    msg = n.reading(now, env)
-                    n.last = msg
-                    if random.random() < n.loss:
-                        continue                       # packet lost over the air: seq is consumed
-                    if n.hold_next:
-                        n.held, n.hold_next = msg, False
-                        continue
-                    self.emit(msg)
-                    if n.held:
-                        self.emit(n.held)              # arrives late => out-of-order at the coordinator
-                        n.held = None
+                    if n.online:
+                        msg = n.reading(now, env)
+                        n.last = msg
+                        if random.random() < n.loss:
+                            pass                       # packet lost over the air
+                        elif n.hold_next:
+                            n.held, n.hold_next = msg, False
+                        else:
+                            self.emit(msg)
+                            if n.held:
+                                self.emit(n.held)
+                                n.held = None
+                    # Forwarded readings (failover via CD4053)
+                    if n.forward_for:
+                        target_id = n.forward_for
+                        fwd_msg = n.reading(
+                            now,
+                            env,
+                            override_node=target_id,
+                            via=n.id,
+                            hops=1,
+                            forwarded_by=f"NODE{n.id}",
+                        )
+                        self.emit(fwd_msg)
+
                 if self.mode == "stdout":
                     print(json.dumps({"type": "hb", "uptime_ms": int(elapsed * 1000)}), flush=True)
             next_tick += config.SENSOR_INTERVAL_S

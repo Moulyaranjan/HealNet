@@ -162,28 +162,168 @@ def get_sensor_history(
 # ---------------------------------------------------------------------------
 # Node endpoints
 # ---------------------------------------------------------------------------
-def _derive_node_status(db: Storage, node_id: int, latest: Optional[dict]) -> tuple[str, Optional[float]]:
-    """Derive accurate node status (ONLINE, STALE, OFFLINE, UNKNOWN) and status_since timestamp."""
+def _derive_full_node_status(db: Storage, node_id: int, latest: Optional[dict]) -> dict:
+    """
+    Derive comprehensive decoupled status for a node:
+    - esp32_status: ONLINE / OFFLINE / UNKNOWN
+    - sensor_status: AVAILABLE / DEGRADED / UNAVAILABLE
+    - data_status: FRESH / STALE / INVALID / MISSING
+    - route_status: DIRECT / FAILOVER
+    - failover_state: 8-state machine state
+    """
+    now = time.time()
     evt = db.latest_node_status(node_id)
-    # Check if coordinator is reported down via active FAULT 5
-    active_sys_faults = [f for f in db.active_faults() if f.get("node_id") is None and f.get("fault_code") == config.FAULT_COORDINATOR]
-    if active_sys_faults:
-        return "UNKNOWN", evt["ts"] if evt else None
+    active_sys_faults = [
+        f for f in db.active_faults()
+        if f.get("node_id") is None and f.get("fault_code") == config.FAULT_COORDINATOR
+    ]
+    coordinator_down = bool(active_sys_faults)
 
-    if latest:
-        age = time.time() - latest["ts"]
-        if age < config.NODE_STALE_S:
-            status = "ONLINE"
-        elif age < config.NODE_TIMEOUT_S:
-            status = "STALE"
+    # Route check from latest route event or latest reading
+    rt = None
+    try:
+        with db._lock:
+            rt_row = db._db.execute(
+                "SELECT * FROM route_events WHERE node_id=? ORDER BY ts DESC LIMIT 1",
+                (node_id,),
+            ).fetchone()
+            if rt_row:
+                rt = dict(rt_row)
+    except Exception:
+        pass
+
+    via = None
+    hops = 0
+    fwd = None
+    if rt:
+        via = rt.get("via")
+        hops = rt.get("hops", 0)
+        fwd = rt.get("forwarded_by")
+    elif latest:
+        via = latest.get("via")
+        hops = latest.get("hops", 0)
+
+    is_failover = (via is not None) or (hops > 0)
+    route_status = config.ROUTE_FAILOVER if is_failover else config.ROUTE_DIRECT
+    route_desc = f"FAILOVER VIA NODE {via}" if is_failover else "DIRECT"
+
+    # Query latest direct packet to determine ESP32 hardware status
+    dir_row = None
+    try:
+        with db._lock:
+            dir_res = db._db.execute(
+                """SELECT * FROM readings
+                   WHERE node_id=? AND (via IS NULL OR via=0) AND (hops IS NULL OR hops=0)
+                   ORDER BY ts DESC LIMIT 1""",
+                (node_id,),
+            ).fetchone()
+            if dir_res:
+                dir_row = dict(dir_res)
+    except Exception:
+        pass
+
+    direct_age_s = round(now - dir_row["ts"], 1) if dir_row else None
+
+    # ESP32 Status & Legacy Status
+    if coordinator_down:
+        esp32_status = config.STATUS_UNKNOWN
+        status = "UNKNOWN"
+    elif latest:
+        age = now - latest["ts"]
+        if is_failover:
+            # When in failover, ESP32 status is determined by direct packet history
+            if dir_row:
+                esp32_status = config.STATUS_ONLINE if direct_age_s < config.NODE_TIMEOUT_S else config.STATUS_OFFLINE
+            else:
+                esp32_status = config.STATUS_OFFLINE
+            status = esp32_status
         else:
-            status = "OFFLINE"
-        status_since = evt["ts"] if evt else latest["ts"]
-        return status, status_since
+            if age < config.NODE_STALE_S:
+                status = "ONLINE"
+            elif age < config.NODE_TIMEOUT_S:
+                status = "STALE"
+            else:
+                status = "OFFLINE"
+            esp32_status = status
+    elif evt:
+        status = evt.get("new_status", "UNKNOWN")
+        esp32_status = status
+    else:
+        status = "UNKNOWN"
+        esp32_status = "UNKNOWN"
 
-    if evt:
-        return evt.get("new_status", "UNKNOWN"), evt["ts"]
-    return "UNKNOWN", None
+    # Data Freshness & Status
+    data_age_s = round(now - latest["ts"], 1) if latest else None
+    if coordinator_down or not latest:
+        data_status = config.DATA_MISSING
+    elif data_age_s < config.NODE_STALE_S:
+        data_status = config.DATA_FRESH if latest.get("valid") else config.DATA_INVALID
+    elif data_age_s < config.NODE_TIMEOUT_S:
+        data_status = config.DATA_STALE
+    else:
+        data_status = config.DATA_MISSING
+
+    # Sensor Availability
+    if coordinator_down or not latest or data_status == config.DATA_MISSING:
+        sensor_status = config.SENSOR_UNAVAILABLE
+    elif latest.get("dht_ok") and latest.get("ldr_ok") and data_status != config.DATA_INVALID:
+        sensor_status = config.SENSOR_AVAILABLE
+    elif latest.get("dht_ok") or latest.get("ldr_ok"):
+        sensor_status = config.SENSOR_DEGRADED
+    else:
+        sensor_status = config.SENSOR_UNAVAILABLE
+
+    # Failover state determination
+    if is_failover and esp32_status == config.STATUS_OFFLINE and data_status in (config.DATA_FRESH, config.DATA_STALE):
+        failover_state = config.STATE_FAILOVER_ACTIVE
+    elif esp32_status == config.STATUS_OFFLINE:
+        failover_state = config.STATE_NODE_FAILURE_DETECTED
+    else:
+        failover_state = config.STATE_NORMAL
+
+    # Find last valid reading
+    last_valid = None
+    try:
+        with db._lock:
+            val_res = db._db.execute(
+                """SELECT * FROM readings
+                   WHERE node_id=? AND valid=1 AND dht_ok=1 AND ldr_ok=1
+                     AND temp IS NOT NULL AND hum IS NOT NULL AND light IS NOT NULL
+                   ORDER BY ts DESC LIMIT 1""",
+                (node_id,),
+            ).fetchone()
+            if val_res:
+                last_valid = dict(val_res)
+    except Exception:
+        pass
+
+    status_since = evt["ts"] if evt else (latest["ts"] if latest else None)
+
+    return {
+        "status": status,
+        "status_since": status_since,
+        "esp32_status": esp32_status,
+        "sensor_status": sensor_status,
+        "data_status": data_status,
+        "route_status": route_status,
+        "route_description": route_desc,
+        "failover_state": failover_state,
+        "direct_age_s": direct_age_s,
+        "data_age_s": data_age_s,
+        "last_valid_reading": last_valid,
+        "route": {
+            "via": via,
+            "hops": hops,
+            "forwarded_by": fwd,
+            "state": route_status,
+        },
+    }
+
+
+def _derive_node_status(db: Storage, node_id: int, latest: Optional[dict]) -> tuple[str, Optional[float]]:
+    """Derive accurate legacy node status (ONLINE, STALE, OFFLINE, UNKNOWN) and status_since timestamp."""
+    full = _derive_full_node_status(db, node_id, latest)
+    return full["status"], full["status_since"]
 
 
 @app.get("/api/nodes", summary="Status overview of all nodes")
@@ -193,15 +333,24 @@ def get_nodes():
     out = []
     for nid in config.NODE_IDS:
         row = db.latest_reading(nid)
-        status, status_since = _derive_node_status(db, nid, row)
+        full = _derive_full_node_status(db, nid, row)
         faults = [f for f in db.active_faults() if f.get("node_id") == nid]
         age_s = round(time.time() - row["ts"], 1) if row else None
         out.append({
             "node_id": nid,
-            "status": status,
-            "status_since": status_since,
+            "status": full["status"],
+            "status_since": full["status_since"],
+            "esp32_status": full["esp32_status"],
+            "sensor_status": full["sensor_status"],
+            "data_status": full["data_status"],
+            "route_status": full["route_status"],
+            "route_description": full["route_description"],
+            "failover_state": full["failover_state"],
+            "route": full["route"],
             "age_s": age_s,
+            "direct_age_s": full["direct_age_s"],
             "last_reading": row,
+            "last_valid_reading": full["last_valid_reading"],
             "active_faults": faults,
             "active_fault_count": len(faults),
         })
@@ -212,22 +361,30 @@ def get_nodes():
 def get_node_status(node_id: int):
     """
     Return status, last reading and active faults for a specific node.
-    Node status (ONLINE/STALE/OFFLINE/UNKNOWN) is determined by the processor
-    and stored in the status_events table.
+    Provides decoupled ESP32, sensor, and route availability.
     """
     if node_id not in config.NODE_IDS:
         _err(f"Unknown node_id {node_id}. Valid: {list(config.NODE_IDS)}", 404)
     db = _get_db()
     latest = db.latest_reading(node_id)
-    status, status_since = _derive_node_status(db, node_id, latest)
+    full = _derive_full_node_status(db, node_id, latest)
     faults = [f for f in db.active_faults() if f.get("node_id") == node_id]
     age_s = round(time.time() - latest["ts"], 1) if latest else None
     return _ok({
         "node_id": node_id,
-        "status": status,
-        "status_since": status_since,
+        "status": full["status"],
+        "status_since": full["status_since"],
+        "esp32_status": full["esp32_status"],
+        "sensor_status": full["sensor_status"],
+        "data_status": full["data_status"],
+        "route_status": full["route_status"],
+        "route_description": full["route_description"],
+        "failover_state": full["failover_state"],
+        "route": full["route"],
         "last_reading": latest,
+        "last_valid_reading": full["last_valid_reading"],
         "age_s": age_s,
+        "direct_age_s": full["direct_age_s"],
         "active_faults": faults,
         "active_fault_count": len(faults),
     })
@@ -426,20 +583,41 @@ def get_system_summary():
     """Return an aggregated summary of the network status, health percentage and active faults."""
     db = _get_db()
     counts = {"ONLINE": 0, "STALE": 0, "OFFLINE": 0, "UNKNOWN": 0}
+    node_summaries = {}
+    any_failover = False
+
     for nid in config.NODE_IDS:
         r = db.latest_reading(nid)
-        st, _ = _derive_node_status(db, nid, r)
+        full = _derive_full_node_status(db, nid, r)
+        st = full["status"]
         counts[st] = counts.get(st, 0) + 1
+        if full["route_status"] == config.ROUTE_FAILOVER:
+            any_failover = True
+        node_summaries[f"node{nid}"] = full
 
     active_faults = db.active_faults()
     coord_faults = [f for f in active_faults if f.get("node_id") is None and f.get("fault_code") == config.FAULT_COORDINATOR]
     coordinator_status = "offline" if coord_faults else "online"
 
     total = len(config.NODE_IDS)
-    health = 100.0 * (counts["ONLINE"] + 0.5 * counts["STALE"]) / total if total else 0.0
     if coordinator_status == "offline":
         health = 0.0
-    health = max(0.0, health - 5.0 * len(active_faults))
+        network_status = "OFFLINE"
+    elif any_failover:
+        network_status = "DEGRADED BUT OPERATIONAL"
+        health = 80.0
+    elif counts["OFFLINE"] > 0:
+        network_status = "DEGRADED"
+        health = 50.0
+    elif counts["STALE"] > 0:
+        network_status = "DEGRADED"
+        health = 75.0
+    else:
+        network_status = "HEALTHY"
+        health = 100.0
+
+    node_faults = sum(1 for a in active_faults if a.get("node_id") and a.get("fault_code") in (1, 7))
+    health = max(0.0, min(100.0, health - 5.0 * len(active_faults)))
 
     return _ok({
         "total_nodes": total,
@@ -448,9 +626,13 @@ def get_system_summary():
         "offline": counts["OFFLINE"],
         "unknown": counts["UNKNOWN"],
         "coordinator": coordinator_status,
+        "network_status": network_status,
+        "failover_active": any_failover,
+        "recovery_status": "ACTIVE" if any(n.get("failover_state") in (config.STATE_RECOVERY_INITIATED, config.STATE_RECOVERY_VALIDATION) for n in node_summaries.values()) else "IDLE",
         "active_fault_count": len(active_faults),
         "active_faults": active_faults,
         "network_health_pct": round(health, 1),
+        "nodes": node_summaries,
     })
 
 
