@@ -346,7 +346,8 @@ function renderKpis(){
   ];
   const h = s.network_health_pct;
   $("kpis").innerHTML = items.map(([k,v])=>{
-    const cls = v.includes("DEGRADED BUT OPERATIONAL") ? "s-FAILOVER tag" : (v==="HEALTHY"||v==="ONLINE"?"s-ONLINE tag":(v==="OFFLINE"?"s-OFFLINE tag":""));
+    const vStr = String(v);
+    const cls = vStr.includes("DEGRADED BUT OPERATIONAL") ? "s-FAILOVER tag" : (vStr==="HEALTHY"||vStr==="ONLINE"?"s-ONLINE tag":(vStr==="OFFLINE"?"s-OFFLINE tag":""));
     return `<div class="kpi"><b><span class="${cls}">${v}</span></b><span>${k}</span></div>`;
   }).join("")
     + `<div class="kpi health"><b>${h == null ? "–" : h.toFixed(0) + "%"}</b><span>Network Health Index</span><div class="bar"><i style="width:${h||0}%"></i></div></div>`;
