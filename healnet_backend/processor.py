@@ -360,58 +360,127 @@ class Processor:
             st.last_direct_rx_ts = max(st.last_direct_rx_ts, clean["rx_ts"])
 
             # Check if recovering from active failover:
-            in_failover = (st.route_status == config.ROUTE_FAILOVER or st.failover_state == config.STATE_FAILOVER_ACTIVE)
+            in_failover = (st.route_status == config.ROUTE_FAILOVER
+                           or st.failover_state in (config.STATE_FAILOVER_ACTIVE,
+                                                     config.STATE_FAILOVER_INITIATED,
+                                                     config.STATE_NODE_FAILURE_DETECTED,
+                                                     config.STATE_RECOVERY_INITIATED,
+                                                     config.STATE_RECOVERY_VALIDATION))
 
             if in_failover:
-                confirm_ts = now
-                duration_s = round(confirm_ts - (st.recovery_start_ts or now), 2)
-                prev_route = f"FAILOVER VIA NODE {st.route[0]}" if st.route[0] else (st.prev_route or "FAILOVER")
-                prev_fault = st.prev_fault or "NODE_COMM_FAILURE"
+                # -----------------------------------------------------------
+                # TWO-PACKET RECOVERY STATE MACHINE
+                # Only valid, non-duplicate, non-out-of-order, non-delayed
+                # direct packets count towards recovery validation.
+                # -----------------------------------------------------------
+                is_ooo = "out_of_order" in flags
+                is_delayed_pkt = "delayed" in flags
+                # A valid recovery packet must carry usable sensor data
+                has_readings = clean["temp"] is not None and clean["hum"] is not None and clean["light"] is not None
+                pkt_valid = clean["valid"] and clean["dht_ok"] and clean["ldr_ok"] and has_readings and self._in_range(clean)
 
-                st.failover_state = config.STATE_RECOVERY_CONFIRMED
-                self.db.insert_recovery_event(
-                    ts=confirm_ts,
-                    node_id=st.node_id,
-                    method="automatic_direct_verification",
-                    trigger_type="direct_packet",
-                    attempt=1,
-                    result="SUCCESS",
-                    duration_s=duration_s,
-                    detail=f"Node {st.node_id} direct communication confirmed after {duration_s}s",
-                    start_ts=st.recovery_start_ts,
-                    previous_fault=prev_fault,
-                    prev_route=prev_route,
-                    new_route=config.ROUTE_DIRECT,
-                )
-                self.pub(config.T_RECOVERY, {
-                    "ts": round(confirm_ts, 3),
-                    "node": st.node_id,
-                    "event": "RECOVERY_CONFIRMED",
-                    "method": "automatic_direct_verification",
-                    "result": "SUCCESS",
-                    "duration_s": duration_s,
-                    "previous_route": prev_route,
-                    "new_route": config.ROUTE_DIRECT,
-                    "previous_fault": prev_fault,
-                    "detail": "Direct wireless communication restored and verified",
-                }, qos=1)
+                if not pkt_valid or is_ooo or is_delayed_pkt:
+                    # Invalid / out-of-order / delayed direct packet resets counter
+                    st.recovery_validation_count = 0
+                    if st.failover_state == config.STATE_RECOVERY_VALIDATION:
+                        st.failover_state = config.STATE_RECOVERY_INITIATED
+                        self.db.insert_system_event(
+                            "recovery_reset",
+                            f"Recovery validation reset for Node {st.node_id}: "
+                            f"invalid={not pkt_valid}, ooo={is_ooo}, delayed={is_delayed_pkt}",
+                            "WARNING"
+                        )
+                else:
+                    # Valid direct packet — advance recovery counter
+                    if st.recovery_start_ts is None:
+                        st.recovery_start_ts = now
+                    st.recovery_validation_count += 1
 
-                st.failover_state = config.STATE_NORMAL_RESTORED
-                st.route_status = config.ROUTE_DIRECT
-                self._update_route(st, None, 0, None, config.ROUTE_DIRECT, "Direct communication verified")
-                st.recovery_start_ts = None
-                st.prev_fault = None
-                st.prev_route = None
-                st.failover_state = config.STATE_NORMAL
+                    required = config.RECOVERY_VALIDATION_PACKETS
+
+                    if st.recovery_validation_count == 1 and required > 1:
+                        # First valid packet — start validation, do NOT confirm yet
+                        st.failover_state = config.STATE_RECOVERY_VALIDATION
+                        st.prev_route = st.prev_route or (f"FAILOVER VIA NODE {st.route[0]}" if st.route[0] else "FAILOVER")
+                        st.prev_fault = st.prev_fault or "NODE_COMM_FAILURE"
+                        self.db.insert_system_event(
+                            "recovery_validation",
+                            f"RECOVERY_VALIDATION: Node {st.node_id} direct packet 1/{required} received",
+                            "INFO"
+                        )
+                        self.pub(config.T_RECOVERY, {
+                            "ts": round(now, 3),
+                            "node": st.node_id,
+                            "event": "RECOVERY_VALIDATION",
+                            "validation_count": st.recovery_validation_count,
+                            "required": required,
+                            "detail": f"Direct packet {st.recovery_validation_count}/{required} validated",
+                        }, qos=1)
+
+                    if st.recovery_validation_count >= required:
+                        # Enough consecutive valid direct packets — CONFIRM recovery
+                        confirm_ts = now
+                        duration_s = round(confirm_ts - (st.recovery_start_ts or now), 2)
+                        prev_route = st.prev_route or (f"FAILOVER VIA NODE {st.route[0]}" if st.route[0] else "FAILOVER")
+                        prev_fault = st.prev_fault or "NODE_COMM_FAILURE"
+
+                        st.failover_state = config.STATE_RECOVERY_CONFIRMED
+                        self.db.insert_recovery_event(
+                            ts=confirm_ts,
+                            node_id=st.node_id,
+                            method="automatic_direct_verification",
+                            trigger_type="direct_packet",
+                            attempt=st.recovery_validation_count,
+                            result="SUCCESS",
+                            duration_s=duration_s,
+                            detail=f"Node {st.node_id} recovery confirmed after {st.recovery_validation_count} consecutive direct packets ({duration_s}s)",
+                            start_ts=st.recovery_start_ts,
+                            previous_fault=prev_fault,
+                            prev_route=prev_route,
+                            new_route=config.ROUTE_DIRECT,
+                        )
+                        self.pub(config.T_RECOVERY, {
+                            "ts": round(confirm_ts, 3),
+                            "node": st.node_id,
+                            "event": "RECOVERY_CONFIRMED",
+                            "method": "automatic_direct_verification",
+                            "result": "SUCCESS",
+                            "duration_s": duration_s,
+                            "validation_count": st.recovery_validation_count,
+                            "required": required,
+                            "previous_route": prev_route,
+                            "new_route": config.ROUTE_DIRECT,
+                            "previous_fault": prev_fault,
+                            "detail": "Direct wireless communication restored and verified",
+                        }, qos=1)
+
+                        # Clear communication fault ONLY after confirmed recovery
+                        if config.FAULT_NODE_COMM in st.faults:
+                            self._clear_fault(st, config.FAULT_NODE_COMM, f"recovery confirmed after {st.recovery_validation_count} direct packets")
+
+                        st.failover_state = config.STATE_NORMAL_RESTORED
+                        st.route_status = config.ROUTE_DIRECT
+                        self._update_route(st, None, 0, None, config.ROUTE_DIRECT, "Direct communication verified")
+                        st.recovery_start_ts = None
+                        st.recovery_validation_count = 0
+                        st.prev_fault = None
+                        st.prev_route = None
+                        st.failover_state = config.STATE_NORMAL
+
+                        st.esp32_status = config.STATUS_ONLINE
+                        self._set_status(st, ONLINE, "direct packet received, recovery confirmed")
+                    # else: still validating — do NOT change route or clear faults
+
             else:
+                # Normal direct packet (not in failover)
                 if st.route_status != config.ROUTE_DIRECT:
                     self._update_route(st, None, 0, None, config.ROUTE_DIRECT, "Direct communication active")
 
-            if config.FAULT_NODE_COMM in st.faults:
-                self._clear_fault(st, config.FAULT_NODE_COMM, "packets received again")
+                if config.FAULT_NODE_COMM in st.faults:
+                    self._clear_fault(st, config.FAULT_NODE_COMM, "packets received again")
 
-            st.esp32_status = config.STATUS_ONLINE
-            self._set_status(st, ONLINE, "direct packet received")
+                st.esp32_status = config.STATUS_ONLINE
+                self._set_status(st, ONLINE, "direct packet received")
 
         else:
             # Forwarded packet: Node 2 is forwarding Node 1's physical sensors through CD4053
@@ -784,6 +853,8 @@ class Processor:
             "active_faults": sorted(st.faults.keys()),
             "last": {k: st.last_payload.get(k) for k in ("temp", "hum", "light")},
             "last_valid": st.last_valid_readings,
+            "recovery_validation_count": st.recovery_validation_count,
+            "recovery_validation_required": config.RECOVERY_VALIDATION_PACKETS,
         }, qos=1, retain=True)
 
     def watchdog_tick(self):

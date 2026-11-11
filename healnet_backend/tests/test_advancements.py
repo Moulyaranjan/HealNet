@@ -211,29 +211,54 @@ class TestAdvancements(unittest.TestCase):
         self.assertEqual(st1.last_valid_readings["hum"], 50.0)
 
     # --------------------------------------------------------------------------
-    # TEST 5: Node 1 Recovery
-    # Restore Node 1 direct communication.
+    # TEST 5: Node 1 Recovery — Two-Packet Validation
+    # Recovery must NOT happen after one direct packet.
+    # Recovery MUST happen after two consecutive valid direct packets.
     # --------------------------------------------------------------------------
-    def test_05_node1_recovery(self):
+    def test_05_recovery_not_after_one_packet(self):
+        """Recovery does NOT happen after only one direct packet."""
         now = time.time()
-        # Node 1 is in failover via Node 2
+        # Establish failover state
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
         self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
         st1 = self.p.nodes[1]
         self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
         self.assertEqual(st1.failover_state, config.STATE_FAILOVER_ACTIVE)
 
-        # Another forwarded packet arrives: does NOT confirm recovery
-        self.feed(1, 11, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 3)
-        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
-        self.assertNotEqual(st1.failover_state, config.STATE_NORMAL)
-
-        # Direct packet arrives from recovered Node 1 ESP32 (via=None, hops=0)
+        # First valid direct packet: starts validation but does NOT confirm
         self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.failover_state, config.STATE_RECOVERY_VALIDATION)
+        self.assertEqual(st1.recovery_validation_count, 1)
+        # Route still FAILOVER!
+        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
+        # Fault still active!
+        self.assertIn(config.FAULT_NODE_COMM, st1.faults)
 
-        # Recovery verified!
+    def test_05b_recovery_after_two_packets(self):
+        """Recovery IS confirmed after two consecutive valid direct packets."""
+        now = time.time()
+        # Establish failover state
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+        self.assertEqual(st1.failover_state, config.STATE_FAILOVER_ACTIVE)
+
+        # First valid direct packet
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.failover_state, config.STATE_RECOVERY_VALIDATION)
+        self.assertEqual(st1.recovery_validation_count, 1)
+
+        # Second valid direct packet — recovery confirmed!
+        self.feed(1, 13, temp=29.1, hum=53.2, light=1710, via=None, hops=0, rx_ts=now + 2)
         self.assertEqual(st1.esp32_status, config.STATUS_ONLINE)
         self.assertEqual(st1.route_status, config.ROUTE_DIRECT)
         self.assertEqual(st1.route, (None, 0))
+        self.assertEqual(st1.failover_state, config.STATE_NORMAL)
+        self.assertNotIn(config.FAULT_NODE_COMM, st1.faults)
 
         # Recovery event stored in database
         rec_events = self.p.db.recovery_events(limit=5)
@@ -242,6 +267,165 @@ class TestAdvancements(unittest.TestCase):
         self.assertEqual(r["node_id"], 1)
         self.assertEqual(r["result"], "SUCCESS")
         self.assertEqual(r["new_route"], config.ROUTE_DIRECT)
+
+    def test_05c_forwarded_packets_dont_count(self):
+        """Forwarded packets NEVER count towards recovery validation."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # First valid direct packet
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.recovery_validation_count, 1)
+
+        # Forwarded packet arrives — must NOT count and must reset validation
+        self.feed(1, 13, via=2, hops=1, forwarded_by="NODE2", rx_ts=now + 2)
+        self.assertEqual(st1.recovery_validation_count, 0)
+        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
+        self.assertNotEqual(st1.failover_state, config.STATE_NORMAL)
+
+    def test_05d_invalid_direct_packets_dont_count(self):
+        """Invalid sensor data in direct packets does NOT count towards recovery."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # First valid direct packet
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.recovery_validation_count, 1)
+
+        # Invalid direct packet — resets counter
+        self.feed(1, 13, temp=None, hum=None, light=None, valid=False, dht_ok=False,
+                  via=None, hops=0, rx_ts=now + 2)
+        self.assertEqual(st1.recovery_validation_count, 0)
+        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
+
+    def test_05e_duplicate_packets_dont_count(self):
+        """Duplicate packets are dropped entirely and do NOT count."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # First valid direct packet
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.recovery_validation_count, 1)
+
+        # Duplicate of packet 12 — dropped by dedup, counter stays at 1
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now + 1)
+        self.assertEqual(st1.recovery_validation_count, 1)
+        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
+
+    def test_05f_ooo_packets_dont_count(self):
+        """Out-of-order packets must NOT count towards recovery."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # First valid direct packet (seq 14)
+        self.feed(1, 14, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.recovery_validation_count, 1)
+
+        # Out-of-order packet (seq 12, older than 14) — resets counter
+        self.feed(1, 12, temp=28.0, hum=52.0, light=1600, via=None, hops=0, rx_ts=now + 2)
+        self.assertEqual(st1.recovery_validation_count, 0)
+        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
+
+    def test_05g_interrupted_validation_resets(self):
+        """An interruption (forwarded packet) during validation resets the counter."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # First valid direct packet
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.assertEqual(st1.recovery_validation_count, 1)
+        self.assertEqual(st1.failover_state, config.STATE_RECOVERY_VALIDATION)
+
+        # Forwarded packet interrupts — resets counter
+        self.feed(1, 13, via=2, hops=1, forwarded_by="NODE2", rx_ts=now + 2)
+        self.assertEqual(st1.recovery_validation_count, 0)
+
+        # Now start again: two valid consecutive direct packets
+        self.feed(1, 14, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now + 4)
+        self.assertEqual(st1.recovery_validation_count, 1)
+        self.feed(1, 15, temp=29.1, hum=53.1, light=1710, via=None, hops=0, rx_ts=now + 6)
+        # NOW recovery is confirmed
+        self.assertEqual(st1.failover_state, config.STATE_NORMAL)
+        self.assertEqual(st1.route_status, config.ROUTE_DIRECT)
+        self.assertNotIn(config.FAULT_NODE_COMM, st1.faults)
+
+    def test_05h_failover_active_during_validation(self):
+        """Route remains FAILOVER and fault active during the entire validation phase."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.p.nodes[1].faults[config.FAULT_NODE_COMM] = {"id": 99, "detail": "test", "ts": now - 10}
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # First valid direct packet — validation started
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        # Verify ALL these remain during validation
+        self.assertEqual(st1.route_status, config.ROUTE_FAILOVER)
+        self.assertIn(config.FAULT_NODE_COMM, st1.faults)
+        self.assertIn(st1.failover_state, (config.STATE_RECOVERY_VALIDATION,))
+
+    def test_05i_recovery_events_stored_correctly(self):
+        """Recovery events in SQLite have the correct metadata."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        self.feed(1, 13, temp=29.1, hum=53.2, light=1710, via=None, hops=0, rx_ts=now + 2)
+
+        rec_events = self.p.db.recovery_events(limit=5)
+        self.assertGreaterEqual(len(rec_events), 1)
+        r = rec_events[0]
+        self.assertEqual(r["node_id"], 1)
+        self.assertEqual(r["result"], "SUCCESS")
+        self.assertEqual(r["new_route"], config.ROUTE_DIRECT)
+        self.assertEqual(r["method"], "automatic_direct_verification")
+        self.assertIsNotNone(r["start_ts"])
+
+    def test_05j_route_changes_only_after_confirmation(self):
+        """Route to DIRECT happens ONLY after the second valid direct packet."""
+        now = time.time()
+        self.p.nodes[1].last_direct_rx_ts = now - 15.0
+        self.p.nodes[1].esp32_status = config.STATUS_OFFLINE
+        self.p.nodes[1].status = P.OFFLINE
+        self.feed(1, 10, via=2, hops=1, forwarded_by="NODE2", rx_ts=now - 5)
+        st1 = self.p.nodes[1]
+
+        # After first direct packet, route still FAILOVER
+        self.feed(1, 12, temp=29.0, hum=53.0, light=1700, via=None, hops=0, rx_ts=now)
+        route_events_before = self.p.topics(config.T_ROUTING)
+        # Only the failover route event(s) should exist, no DIRECT route event yet
+        direct_events = [e for e in route_events_before if e.get("state") == config.ROUTE_DIRECT]
+        self.assertEqual(len(direct_events), 0)
+
+        # After second direct packet, route becomes DIRECT
+        self.feed(1, 13, temp=29.1, hum=53.2, light=1710, via=None, hops=0, rx_ts=now + 2)
+        self.assertEqual(st1.route_status, config.ROUTE_DIRECT)
 
     # --------------------------------------------------------------------------
     # TEST 6: Coordinator Failure

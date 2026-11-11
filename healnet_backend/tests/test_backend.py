@@ -101,7 +101,9 @@ class Tests(unittest.TestCase):
         self.p.watchdog_tick()
         self.assertEqual(self.p.nodes[1].status, P.OFFLINE)
         self.assertIn(2, self.p.nodes[1].faults)
+        # 2 consecutive valid direct packets required to confirm recovery (RECOVERY_VALIDATION_PACKETS=2)
         self.feed(1, 2)
+        self.feed(1, 3)
         self.assertEqual(self.p.nodes[1].status, P.ONLINE)
         self.assertNotIn(2, self.p.nodes[1].faults)
 
@@ -345,17 +347,18 @@ class CoordinatorFormatTests(unittest.TestCase):
         self.assertEqual(self.p.nodes[1].status, P.OFFLINE)
         self.assertIn(2, self.p.nodes[1].faults)
 
-        # Resuming packets clears FAULT 2 and marks node ONLINE
+        # Resuming packets clears FAULT 2 and marks node ONLINE after 2 consecutive valid packets
         self.feed_coord(1, 2)
+        self.feed_coord(1, 3)
         self.assertEqual(self.p.nodes[1].status, P.ONLINE)
         self.assertNotIn(2, self.p.nodes[1].faults)
 
         # 2. Recovery from sensor failure
-        for s in range(3, 7):
+        for s in range(4, 8):
             self.feed_coord(1, s, temperature=None, humidity=None)
         self.assertIn(1, self.p.nodes[1].faults)
         # 3 good packets clear FAULT 1
-        for s in range(7, 11):
+        for s in range(8, 12):
             self.feed_coord(1, s, temperature=28.0, humidity=50.0, light=800)
         self.assertNotIn(1, self.p.nodes[1].faults)
         self.assertEqual(self.p.nodes[1].sensor_state["dht"], "OK")
