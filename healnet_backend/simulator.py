@@ -59,7 +59,7 @@ class SimNode:
         self.hold_next = False
         self.held = None
 
-    def reading(self, now, env_light_offset, override_node=None, via=None, hops=0, forwarded_by=None):
+    def reading(self, now, env_light_offset, override_node=None, via=None, hops=0, forwarded_by=None, seq=None):
         t = now - self.t0
         nid = override_node or self.id
         temp = 26.0 + 1.2 * math.sin(t / 90 + self.phase) + random.gauss(0, 0.15)
@@ -69,8 +69,9 @@ class SimNode:
             temp += 14.0
             self.spike -= 1
         dht_ok = not self.dht_fail
+        pkt_seq = self.seq if seq is None else seq
         msg = {
-            "type": "data", "node": nid, "seq": self.seq, "boot": self.boot,
+            "type": "data", "node": nid, "seq": pkt_seq, "boot": self.boot,
             "temp": round(round(temp), 1) if dht_ok else float("nan"),
             "hum": round(round(hum), 1) if dht_ok else float("nan"),
             "light": 4095 if self.ldr_stuck else int(max(0, min(4095, light))),
@@ -83,7 +84,8 @@ class SimNode:
             "forwarded_by": forwarded_by,
             "simulated": True,
         }
-        self.seq += 1
+        if seq is None:
+            self.seq += 1
         return msg
 
 
@@ -228,8 +230,12 @@ class Simulator:
                                 self.emit(n.held)
                                 n.held = None
                     # Forwarded readings (failover via CD4053)
+                    # Node 2 uses Node 1's sequence counter when forwarding Node 1's readings,
+                    # so sequence continuity is preserved when Node 1 resumes direct transmission.
                     if n.forward_for:
                         target_id = n.forward_for
+                        target_node = self.nodes.get(target_id)
+                        target_seq = target_node.seq if target_node else None
                         fwd_msg = n.reading(
                             now,
                             env,
@@ -237,7 +243,10 @@ class Simulator:
                             via=n.id,
                             hops=1,
                             forwarded_by=f"NODE{n.id}",
+                            seq=target_seq,
                         )
+                        if target_node:
+                            target_node.seq += 1
                         self.emit(fwd_msg)
 
                 if self.mode == "stdout":
