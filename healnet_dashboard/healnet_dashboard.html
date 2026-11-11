@@ -726,7 +726,7 @@ function loadMqtt(urls){
 }
 ensureNode(1); ensureNode(2);
 backfill();
-loadMqtt(["mqtt.min.js","https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js","https://unpkg.com/mqtt@5/dist/mqtt.min.js"])
+loadMqtt(["https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js","https://unpkg.com/mqtt@5/dist/mqtt.min.js"])
 .then(()=>{
   const c = mqtt.connect(WS_URL, {clientId:"healnet-dash-" + Math.random().toString(16).slice(2,8), reconnectPeriod:2000, clean:true});
   c.on("connect", ()=>{ chip("c-mqtt","Dashboard","online"); c.subscribe("healnet/#", {qos:0}); });
