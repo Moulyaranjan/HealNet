@@ -344,6 +344,10 @@ function renderKpis(){
     ["Online Nodes", s.online ?? 0],
     ["Failover Route", anyFailover ? "ACTIVE (via CD4053)" : "DIRECT"],
   ];
+  const n1 = nodes[1];
+  if(n1 && (n1.recovery_validation_count > 0 || n1.failover_state === "RECOVERY_VALIDATION")){
+    items.push(["Recovery Progress", `VALIDATING (${n1.recovery_validation_count || 1}/${n1.recovery_validation_required || 2})`]);
+  }
   const h = s.network_health_pct;
   $("kpis").innerHTML = items.map(([k,v])=>{
     const vStr = String(v);
@@ -547,6 +551,8 @@ function onMsg(topic, raw){
     if(m.route_status) n.route_status = m.route_status;
     if(m.route_description) n.route_description = m.route_description;
     if(m.failover_state) n.failover_state = m.failover_state;
+    if(m.recovery_validation_count != null) n.recovery_validation_count = m.recovery_validation_count;
+    if(m.recovery_validation_required != null) n.recovery_validation_required = m.recovery_validation_required;
   } else if((r = topic.match(/^healnet\/node(\d+)\/status$/))){
     const n = ensureNode(+r[1]);
     n.st = m;
@@ -557,6 +563,8 @@ function onMsg(topic, raw){
     n.route_status = m.route_status || n.route_status;
     n.route_description = m.route_description || n.route_description;
     n.failover_state = m.failover_state || n.failover_state;
+    if(m.recovery_validation_count != null) n.recovery_validation_count = m.recovery_validation_count;
+    if(m.recovery_validation_required != null) n.recovery_validation_required = m.recovery_validation_required;
     n.rcv = Date.now();
     if(m.last && m.last.temp != null) n.last = m.last;
     if(m.last_valid && m.last_valid.temp != null) n.last_valid = m.last_valid;

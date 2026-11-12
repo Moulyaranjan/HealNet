@@ -214,14 +214,18 @@ class Processor:
         now = time.time()
 
         if "recovery" in ev_type or "recovery" in msg.lower():
+            # A notification/button event does NOT confirm hardware recovery.
+            # Only fresh, valid direct packets from the original ESP32 can confirm automatic recovery.
+            # Record as initiation / notification event only with result="INITIATED" (not SUCCESS).
             self.db.insert_recovery_event(
                 now, node_id, method="manual_button", trigger_type="coordinator_button",
-                result="SUCCESS", detail=f"{ev_type}: {msg}")
+                result="INITIATED", detail=f"{ev_type}: {msg}")
             self.db.insert_system_event(
-                "coordinator_recovery", f"Recovery on node {node_id}: {msg}", "INFO")
+                "coordinator_recovery_initiated", f"Recovery on node {node_id} initiated: {msg}", "INFO")
             self.pub(config.T_RECOVERY, {
                 "ts": round(now, 3), "node": node_id, "event": ev_type,
-                "method": "manual_button", "result": "SUCCESS", "detail": msg
+                "method": "manual_button", "result": "INITIATED", "detail": msg,
+                "note": "Recovery initiated via notification; requires valid direct packets for verification",
             }, qos=1)
         elif "fail" in ev_type:
             self.db.insert_system_event(
@@ -248,33 +252,89 @@ class Processor:
         except (IndexError, ValueError):
             return None, "bad topic"
         node = p.get("node", topic_node)
+        if isinstance(node, bool) or not isinstance(node, int):
+            return None, "node id must be an integer (not boolean or string)"
         if node != topic_node or node not in self.nodes:
             return None, f"node id mismatch/unknown (topic {topic_node}, payload {node})"
+
         seq = p.get("seq")
-        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-            return None, "missing/invalid seq"
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+            return None, "missing/invalid seq (must be non-negative integer, not boolean)"
+
+        # Strict validation of via and hops
+        raw_via = p.get("via")
+        if raw_via is not None:
+            if isinstance(raw_via, bool) or not isinstance(raw_via, int):
+                return None, "via must be an integer node id or null"
+            if raw_via not in self.nodes:
+                return None, f"via node {raw_via} is not a valid node id"
+            if raw_via == node:
+                return None, f"self-forwarding invalid: via ({raw_via}) cannot equal node ({node})"
+
+        raw_hops = p.get("hops", 0)
+        if isinstance(raw_hops, bool) or not isinstance(raw_hops, int) or raw_hops < 0:
+            return None, "hops must be non-negative integer (not boolean or negative)"
+
+        # Consistency between via and hops
+        if raw_via is None and raw_hops != 0:
+            return None, "direct packet (via is null) must have hops=0"
+        if raw_via is not None and raw_hops == 0:
+            return None, "forwarded packet (via is specified) must have hops >= 1"
+
+        # Check forwarded_by consistency if present
+        fwd_by = p.get("forwarded_by")
+        if fwd_by is not None and raw_via is not None:
+            expected_fwd = f"NODE{raw_via}"
+            if str(fwd_by).upper() != expected_fwd:
+                return None, f"forwarded_by ({fwd_by}) inconsistent with via ({raw_via})"
+
         clean = {"node": node, "seq": seq}
-        clean["rx_ts"] = float(p["rx_ts"]) if isinstance(p.get("rx_ts"), (int, float)) else time.time()
+
+        rx_ts = p.get("rx_ts")
+        if isinstance(rx_ts, bool) or not isinstance(rx_ts, (int, float)) or rx_ts <= 0:
+            clean["rx_ts"] = time.time()
+        else:
+            clean["rx_ts"] = float(rx_ts)
+
         for key in ("uptime_ms", "boot", "rssi", "bridge_seq"):
-            if isinstance(p.get(key), (int, float)) and not isinstance(p.get(key), bool):
-                clean[key] = int(p[key])
-        clean["via"] = int(p["via"]) if (isinstance(p.get("via"), (int, float)) and not isinstance(p.get("via"), bool)) else None
-        clean["hops"] = int(p["hops"]) if (isinstance(p.get("hops"), (int, float)) and not isinstance(p.get("hops"), bool)) else 0
-        clean["forwarded_by"] = p.get("forwarded_by")
+            val = p.get(key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                clean[key] = int(val)
+
+        clean["via"] = raw_via
+        clean["hops"] = raw_hops
+        clean["forwarded_by"] = fwd_by or (f"NODE{raw_via}" if raw_via is not None else None)
         clean["source"] = p.get("source") or f"NODE{node}"
-        clean["valid"] = bool(p.get("valid", True))
+
+        # Strict boolean parsing: do not allow string "false" to evaluate to True via bool()
+        def _parse_bool(val, default=True):
+            if val is None:
+                return default
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                s = val.strip().lower()
+                if s in ("true", "1", "yes", "on"):
+                    return True
+                if s in ("false", "0", "no", "off"):
+                    return False
+                return default
+            if isinstance(val, (int, float)):
+                return bool(val)
+            return default
+
+        clean["valid"] = _parse_bool(p.get("valid"), True)
+
         # sensor values: keep only finite numbers
         for key in ("temp", "hum", "light"):
             v = p.get(key)
             ok = isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
             clean[key] = float(v) if ok else None
         clean["light"] = None if clean["light"] is None else int(clean["light"])
-        # Per-sensor health. If the firmware only sends one "valid" flag it can only be the DHT11
-        # (an analog LDR cannot self-report), so valid=false is attributed to the DHT11; the LDR is
-        # judged from its value (missing / pinned at an ADC rail).
+
         dht_values = clean["temp"] is not None and clean["hum"] is not None
-        clean["dht_ok"] = bool(p["dht_ok"]) if "dht_ok" in p else (clean["valid"] and dht_values)
-        clean["ldr_ok"] = bool(p["ldr_ok"]) if "ldr_ok" in p else (clean["light"] is not None)
+        clean["dht_ok"] = _parse_bool(p["dht_ok"]) if "dht_ok" in p else (clean["valid"] and dht_values)
+        clean["ldr_ok"] = _parse_bool(p["ldr_ok"]) if "ldr_ok" in p else (clean["light"] is not None)
         return clean, None
 
     def _on_data(self, topic, p):
@@ -871,8 +931,9 @@ class Processor:
                     # We cannot see the nodes at all: this is FAULT 5, not an individual node failure.
                     if st.status != UNKNOWN:
                         self._set_status(st, UNKNOWN, "coordinator/bridge down - node state not observable")
-                        st.esp32_status = config.STATUS_UNKNOWN
-                        st.data_status = config.DATA_MISSING
+                    st.esp32_status = config.STATUS_UNKNOWN
+                    st.sensor_status = config.SENSOR_UNAVAILABLE
+                    st.data_status = config.DATA_MISSING
                     continue
 
                 # Evaluate Node Communication and Freshness

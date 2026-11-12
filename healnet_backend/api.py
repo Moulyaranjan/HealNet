@@ -273,8 +273,25 @@ def _derive_full_node_status(db: Storage, node_id: int, latest: Optional[dict]) 
     else:
         sensor_status = config.SENSOR_UNAVAILABLE
 
-    # Failover state determination
-    if is_failover and esp32_status == config.STATUS_OFFLINE and data_status in (config.DATA_FRESH, config.DATA_STALE):
+    # Failover and recovery state determination
+    # Check if there is an active recovery validation in progress
+    rec_val = False
+    try:
+        with db._lock:
+            # Query recent system events for recovery validation
+            recent_ev = db._db.execute(
+                """SELECT event_type FROM system_events
+                   WHERE detail LIKE ? ORDER BY ts DESC LIMIT 1""",
+                (f"%Node {node_id}%",)
+            ).fetchone()
+            if recent_ev and recent_ev[0] == "recovery_validation":
+                rec_val = True
+    except Exception:
+        pass
+
+    if rec_val and is_failover:
+        failover_state = config.STATE_RECOVERY_VALIDATION
+    elif is_failover and esp32_status == config.STATUS_OFFLINE and data_status in (config.DATA_FRESH, config.DATA_STALE):
         failover_state = config.STATE_FAILOVER_ACTIVE
     elif esp32_status == config.STATUS_OFFLINE:
         failover_state = config.STATE_NODE_FAILURE_DETECTED
